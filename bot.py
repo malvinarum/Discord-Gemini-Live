@@ -2,6 +2,7 @@ import os
 import discord
 import google.generativeai as genai
 from dotenv import load_dotenv
+from discord import app_commands  # <-- New import
 
 # --- 1. Load Configuration ---
 load_dotenv()
@@ -9,7 +10,6 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 # Load the personality, providing a sensible default if not set
 BOT_PERSONALITY = os.getenv('BOT_PERSONALITY', 'You are a helpful, witty, and concise assistant.')
-
 
 if not DISCORD_TOKEN:
     print("Error: DISCORD_TOKEN not found. Make sure to set it in your .env file.")
@@ -30,20 +30,19 @@ try:
         "max_output_tokens": 8192,
         "response_mime_type": "text/plain",
     }
-    
+
     # Use the personality from the .env file as the system instruction
     system_instruction = BOT_PERSONALITY
 
     gemini_model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash-latest", # Using Flash for speed
+        model_name="gemini-1.5-flash-latest",  # Using Flash for speed
         generation_config=generation_config,
-        system_instruction=system_instruction, # <-- Now using your defined personality
+        system_instruction=system_instruction,  # <-- Now using your defined personality
     )
     print(f"Gemini model configured successfully with personality: {BOT_PERSONALITY}")
 except Exception as e:
     print(f"Error configuring Gemini: {e}")
     exit()
-
 
 # --- 3. Configure Discord Bot ---
 # We need to enable all intents to get message content, members, and voice states
@@ -53,77 +52,95 @@ intents = discord.Intents.all()
 allowed_mentions = discord.AllowedMentions.none()
 
 client = discord.Client(intents=intents, allowed_mentions=allowed_mentions)
+tree = app_commands.CommandTree(client)  # <-- Create a command tree
+
 
 # --- 4. Bot Events ---
 
 @client.event
 async def on_ready():
     """Called when the bot successfully connects to Discord."""
-    print(f'Sprint 1 Bot is online. Logged in as {client.user}')
+
+    print("Syncing command tree...")
+    try:
+        # Sync the command tree. This tells Discord about our slash commands.
+        # This can take a moment, especially on first run.
+        await tree.sync()
+        print("Command tree synced.")
+    except Exception as e:
+        print(f"Error syncing command tree: {e}")
+
+    print(f'Sprint 1 Bot (Slash) is online. Logged in as {client.user}')
     # Set a custom status
-    await client.change_presence(activity=discord.Game(name="Waiting for !ask"))
+    await client.change_presence(activity=discord.Game(name="Waiting for /ask"))
+
 
 @client.event
 async def on_message(message):
     """Called every time a message is sent in a channel the bot can see."""
-    
+
     # Ignore messages sent by the bot itself
     if message.author == client.user:
         return
 
-    # --- Sprint 1: Text Command (!ask) ---
-    if message.content.startswith('!ask'):
-        
-        # Get the prompt text (everything after "!ask ")
-        prompt_text = message.content[5:].strip()
+    # We no longer process !ask commands here. All logic is in the slash command.
 
-        if not prompt_text:
-            await message.reply("Please provide a prompt after `!ask`. For example: `!ask Who are you?`")
-            return
 
-        print(f"Received prompt from {message.author}: {prompt_text}")
+# --- 5. Slash Command ---
 
-        # Send a "typing..." indicator to the channel
-        async with message.channel.typing():
-            try:
-                # --- Send to Gemini API ---
-                # Using generate_content for a simple request-response
-                response = await gemini_model.generate_content_async(prompt_text)
-                
-                # --- Send Response to Discord ---
-                if response and response.text:
-                    # Discord has a 2000 character limit per message.
-                    # We'll split the message if it's too long.
-                    await send_long_message(message.reply, response.text)
-                else:
-                    await message.reply("Sorry, I couldn't get a response from Gemini.")
+@tree.command(name="ask", description="Ask a question to the Gemini AI.")
+@app_commands.describe(prompt="The question you want to ask.")
+async def ask(interaction: discord.Interaction, prompt: str):
+    """Handles the /ask slash command."""
 
-            except Exception as e:
-                print(f"An error occurred while processing Gemini request: {e}")
-                await message.reply(f"An error occurred: {e}")
+    # Defer the response immediately.
+    # This shows a "Bot is thinking..." message and prevents a 3-second timeout.
+    await interaction.response.defer()
 
-# --- 5. Helper Function ---
-async def send_long_message(send_func, text):
+    print(f"Received prompt from {interaction.user}: {prompt}")
+
+    try:
+        # --- Send to Gemini API ---
+        # Using generate_content for a simple request-response
+        response = await gemini_model.generate_content_async(prompt)
+
+        # --- Send Response to Discord ---
+        if response and response.text:
+            # Use the helper to send the (potentially long) response
+            await send_long_message(interaction, response.text)
+        else:
+            await interaction.followup.send("Sorry, I couldn't get a response from Gemini.")
+
+    except Exception as e:
+        print(f"An error occurred while processing Gemini request: {e}")
+        await interaction.followup.send(f"An error occurred: {e}")
+
+
+# --- 6. Helper Function ---
+async def send_long_message(interaction: discord.Interaction, text: str):
     """
     Splits a long string into 2000-character chunks and sends them.
-    `send_func` should be a function like `message.reply` or `channel.send`.
+    The first message is sent as a followup, and subsequent messages are sent to the channel.
     """
     max_len = 2000
     if len(text) <= max_len:
-        await send_func(text)
+        await interaction.followup.send(text)  # Send as the followup
         return
 
     # Split into chunks
     chunks = [text[i:i + max_len] for i in range(0, len(text), max_len)]
-    
-    # Send the first chunk as a reply, and subsequent chunks as new messages
+
     if chunks:
-        await send_func(chunks[0])
-        for chunk in chunks[1:]:
-            await send_func.channel.send(chunk)
+        # Send the first chunk as the followup
+        await interaction.followup.send(chunks[0])
+
+        # Send subsequent chunks as new messages in the same channel
+        if len(chunks) > 1 and interaction.channel:
+            for chunk in chunks[1:]:
+                await interaction.channel.send(chunk)
 
 
-# --- 6. Run the Bot ---
+# --- 7. Run the Bot ---
 try:
     client.run(DISCORD_TOKEN)
 except discord.errors.LoginFailure:
