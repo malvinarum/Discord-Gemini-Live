@@ -83,7 +83,7 @@ async def on_ready():
     except Exception as e:
         print(f"Error syncing command tree: {e}")
 
-    print(f'Sprint 1 Bot (v2.7 - MONO FIX) is online. Logged in as {client.user}')
+    print(f'Sprint 1 Bot (v2.8 - REAL MONO FIX) is online. Logged in as {client.user}')
     await client.change_presence(activity=discord.Game(name="Waiting for commands..."))
 
 
@@ -280,9 +280,9 @@ async def chat(interaction: discord.Interaction):
 
     print(f"Starting recording for {filename}")
 
-    # --- THE v2.7 ONE-LINE FIX ---
-    # We create the sink and tell it to record in MONO (1 channel)
-    sink = voice_recv.WaveSink(filename, channels=1)
+    # --- THE v2.8 ONE-LINE FIX ---
+    # We create the sink *without* the 'channels' argument
+    sink = voice_recv.WaveSink(filename)
 
     # 2. Pass a lambda to 'after' that includes the interaction and the FILENAME
     voice_client.listen(
@@ -394,13 +394,13 @@ def transcribe_audio_file(filename: str) -> str:
         with wave.open(filename, "rb") as wf:
             sample_rate = wf.getframerate()
             channels = wf.getnchannels()
-            print(f"WAV file details: {sample_rate}Hz, {channels} channels")
+            print(f"WAV file details: {sample_rate}Hz, {channels} channels")  # This will now print '2 channels'
 
         audio = speech.RecognitionAudio(content=content)
 
-        # --- THE v2.7 FIX ---
-        # We must tell Google STT how many channels to expect.
-        # It will be 1, because our sink now records in mono.
+        # --- THE v2.7/v2.8 FIX ---
+        # This is the *correct* way to handle mono/stereo.
+        # We tell Google to expect 2 channels.
         config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
             sample_rate_hertz=sample_rate,
