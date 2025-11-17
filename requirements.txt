@@ -1,11 +1,9 @@
-#Python libraries required for the project
-
-#This line installs the v2.7+ dev build of py-cord from GitHub using the MODERN PEP 508 syntax.
-
+# Python libraries required for the project
+# This line installs the v2.7+ dev build of py-cord from GitHub
+# using the MODERN PEP 508 syntax.
 py-cord[sink,voice] @ git+https://github.com/Pycord-Development/pycord.git
 
-#The rest of our libraries
-
+# The rest of our libraries
 google-generativeai>=0.5.0
 python-dotenv>=1.0.0
 PyNaCl>=1.5.0
