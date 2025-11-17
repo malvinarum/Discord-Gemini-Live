@@ -72,7 +72,7 @@ async def on_ready():
 
     print(f'Sprint 1 Bot (Slash) is online. Logged in as {client.user}')
     # Set a custom status
-    await client.change_presence(activity=discord.Game(name="Waiting for /ask"))
+    await client.change_presence(activity=discord.Game(name="Waiting for commands..."))
 
 
 @client.event
@@ -86,7 +86,7 @@ async def on_message(message):
     # We no longer process !ask commands here. All logic is in the slash command.
 
 
-# --- 5. Slash Command ---
+# --- 5. Slash Commands (Text) ---
 
 @tree.command(name="ask", description="Ask a question to the Gemini AI.")
 @app_commands.describe(prompt="The question you want to ask.")
@@ -116,7 +116,66 @@ async def ask(interaction: discord.Interaction, prompt: str):
         await interaction.followup.send(f"An error occurred: {e}")
 
 
-# --- 6. Helper Function ---
+# --- 6. Slash Commands (Voice) ---
+
+@tree.command(name="join", description="Joins your current voice channel.")
+async def join(interaction: discord.Interaction):
+    """Handles the /join slash command."""
+
+    # Check if the user is in a voice channel
+    if not interaction.user.voice:
+        await interaction.response.send_message("You're not in a voice channel, meat-bag. Where am I supposed to go?",
+                                                ephemeral=True)
+        return
+
+    voice_channel = interaction.user.voice.channel
+
+    # Check if the bot is already in a voice channel
+    if interaction.guild.voice_client:
+        # If already in the user's channel
+        if interaction.guild.voice_client.channel == voice_channel:
+            await interaction.response.send_message("I'm already *in* your channel. Are you paying attention?",
+                                                    ephemeral=True)
+            return
+        # If in another channel, move to the user's channel
+        try:
+            await interaction.guild.voice_client.move_to(voice_channel)
+            await interaction.response.send_message(f"Fine, I'm moving to `{voice_channel.name}`.")
+        except Exception as e:
+            await interaction.response.send_message(f"I had a problem moving channels: {e}")
+        return
+
+    # If not in any channel, try to connect
+    try:
+        await voice_channel.connect()
+        await interaction.response.send_message(f"Okay, I'm in `{voice_channel.name}`. What do you want?")
+    except discord.errors.ClientException as e:
+        await interaction.response.send_message(f"Error connecting to voice: {e}", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"An unknown error occurred: {e}", ephemeral=True)
+
+
+@tree.command(name="leave", description="Leaves the voice channel it is currently in.")
+async def leave(interaction: discord.Interaction):
+    """Handles the /leave slash command."""
+
+    # Check if the bot is in a voice channel
+    if not interaction.guild.voice_client:
+        await interaction.response.send_message("I'm not in a voice channel, so I can't leave. Obviously.",
+                                                ephemeral=True)
+        return
+
+    # If in a voice channel, disconnect
+    try:
+        current_channel = interaction.guild.voice_client.channel.name
+        await interaction.guild.voice_client.disconnect()
+        await interaction.response.send_message(
+            f"Alright, I'm leaving `{current_channel}`. It was getting boring anyway.")
+    except Exception as e:
+        await interaction.response.send_message(f"I had a problem leaving: {e}", ephemeral=True)
+
+
+# --- 7. Helper Function ---
 async def send_long_message(interaction: discord.Interaction, text: str):
     """
     Splits a long string into 2000-character chunks and sends them.
@@ -140,7 +199,7 @@ async def send_long_message(interaction: discord.Interaction, text: str):
                 await interaction.channel.send(chunk)
 
 
-# --- 7. Run the Bot ---
+# --- 8. Run the Bot ---
 try:
     client.run(DISCORD_TOKEN)
 except discord.errors.LoginFailure:
