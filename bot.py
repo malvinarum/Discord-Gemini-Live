@@ -3,7 +3,7 @@ import discord
 import google.generativeai as genai
 from dotenv import load_dotenv
 from discord import app_commands
-from google.cloud import texttospeech  # <-- Import is the same
+from google.cloud import texttospeech  # <-- New import for TTS
 
 # --- 1. Load Configuration ---
 load_dotenv()
@@ -14,10 +14,10 @@ BOT_PERSONALITY = os.getenv('BOT_PERSONALITY', 'You are a helpful, witty, and co
 # This new var tells the Google Cloud library where to find our JSON key
 # Make sure the .json file is in your bot's main directory
 GOOGLE_SERVICE_JSON = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-if GOOGLE_SERVICE_JSON:
+if GOOGLE_SERVICE_JSON and os.path.exists(GOOGLE_SERVICE_JSON):
     os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GOOGLE_SERVICE_JSON
 else:
-    print("Warning: GOOGLE_APPLICATION_CREDENTIALS not set. TTS will fail.")
+    print("Warning: GOOGLE_APPLICATION_CREDENTIALS not set or file not found. TTS will fail.")
 
 # --- 2. Configure Gemini ---
 try:
@@ -48,8 +48,7 @@ try:
     # This client will automatically find and use the credentials
     # we set in os.environ['GOOGLE_APPLICATION_CREDENTIALS']
 
-    # --- THIS IS THE FIRST CHANGE ---
-    # We are switching to the SYNCHRONOUS client to avoid event loop conflicts.
+    # We are using the SYNCHRONOUS client to avoid asyncio event loop conflicts.
     tts_client = texttospeech.TextToSpeechClient()
     print("Google Cloud TTS client configured successfully.")
 except Exception as e:
@@ -224,7 +223,6 @@ async def say(interaction: discord.Interaction, text: str):
     try:
         print(f"Synthesizing speech for: '{text}'")
 
-        # --- THIS IS THE SECOND CHANGE ---
         # We configure the request objects in the main (async) thread
         synthesis_input = texttospeech.SynthesisInput(text=text)
         voice = texttospeech.VoiceSelectionParams(
@@ -235,15 +233,21 @@ async def say(interaction: discord.Interaction, text: str):
             audio_encoding=texttospeech.AudioEncoding.MP3
         )
 
+        # --- THIS IS THE FIX ---
+        # We bundle the configs into a single 'request' object
+        request = texttospeech.SynthesizeSpeechRequest(
+            input=synthesis_input,
+            voice=voice,
+            audio_config=audio_config
+        )
+
         # Then, we run the BLOCKING tts_client.synthesize_speech call
         # in a separate thread using client.loop.run_in_executor.
-        # This prevents it from blocking the bot or conflicting with the event loop.
+        # This time, we only pass the single 'request' object.
         response = await client.loop.run_in_executor(
             None,  # Use the default thread pool
             tts_client.synthesize_speech,  # The blocking function to run
-            synthesis_input,  # First argument for the function
-            voice,  # Second argument
-            audio_config  # Third argument
+            request  # The *single* request object
         )
         # The 'await' waits for the thread to finish, then we continue.
 
