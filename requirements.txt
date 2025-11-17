@@ -1,8 +1,8 @@
 #Python libraries required for the project
 
-#This line installs the v2.7+ dev build of py-cord from GitHub
+#This line installs the v2.7+ dev build of py-cord from GitHub using the MODERN PEP 508 syntax.
 
--e git+https://github.com/Pycord-Development/pycord.git#egg=py-cord[sink,voice]
+py-cord[sink,voice] @ git+https://github.com/Pycord-Development/pycord.git
 
 #The rest of our libraries
 
