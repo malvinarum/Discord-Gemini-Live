@@ -83,7 +83,7 @@ async def on_ready():
     except Exception as e:
         print(f"Error syncing command tree: {e}")
 
-    print(f'Sprint 1 Bot (v2.6 - Filename Pass FIX) is online. Logged in as {client.user}')
+    print(f'Sprint 1 Bot (v2.7 - MONO FIX) is online. Logged in as {client.user}')
     await client.change_presence(activity=discord.Game(name="Waiting for commands..."))
 
 
@@ -276,17 +276,15 @@ async def chat(interaction: discord.Interaction):
             await interaction.channel.send(f"Error speaking: {e}")
         return
 
-    # We still need to create the filename here
     filename = f"rec_{interaction.id}_{int(time.time())}.wav"
 
     print(f"Starting recording for {filename}")
 
-    # 1. Create the sink instance first
-    sink = voice_recv.WaveSink(filename)
+    # --- THE v2.7 ONE-LINE FIX ---
+    # We create the sink and tell it to record in MONO (1 channel)
+    sink = voice_recv.WaveSink(filename, channels=1)
 
-    # 2. --- THE v2.6 FIX ---
-    # We pass the INTERACTION and the FILENAME (str) to the callback.
-    # We no longer pass the broken sink object.
+    # 2. Pass a lambda to 'after' that includes the interaction and the FILENAME
     voice_client.listen(
         sink,
         after=lambda e: after_recording_callback(interaction, filename, e)
@@ -395,12 +393,19 @@ def transcribe_audio_file(filename: str) -> str:
 
         with wave.open(filename, "rb") as wf:
             sample_rate = wf.getframerate()
+            channels = wf.getnchannels()
+            print(f"WAV file details: {sample_rate}Hz, {channels} channels")
 
         audio = speech.RecognitionAudio(content=content)
+
+        # --- THE v2.7 FIX ---
+        # We must tell Google STT how many channels to expect.
+        # It will be 1, because our sink now records in mono.
         config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
             sample_rate_hertz=sample_rate,
-            language_code="en-US"
+            language_code="en-US",
+            audio_channel_count=channels  # Tell Google how many channels
         )
 
         response = stt_client.recognize(config=config, audio=audio)
