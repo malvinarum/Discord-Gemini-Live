@@ -1,13 +1,14 @@
 import os
 import discord
+from discord import app_commands  # Back to app_commands
 import google.generativeai as genai
 from dotenv import load_dotenv
-# We no longer need app_commands, discord.Bot handles it.
 from google.cloud import texttospeech
 from google.cloud import speech
 import wave
 import time
 import asyncio  # <-- Using this for the wait_for_speech_to_finish
+import discord.sinks  # <-- This will work now!
 
 # --- 1. Load Configuration ---
 load_dotenv()
@@ -59,16 +60,14 @@ except Exception as e:
     print(f"Error configuring Google Cloud STT: {e}")
 
 # --- 4. Configure Discord Bot ---
-# We're now using discord.Bot, which is the py-cord way.
+# We are BACK to discord.Client and CommandTree
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
 intents.members = True
 
-# We create a Bot instance instead of a Client instance.
-bot = discord.Bot(intents=intents)
-
-# We no longer need a CommandTree! bot.slash_command handles it.
+client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
 
 # --- 4.5. Global State ---
 pending_chats = {}
@@ -76,198 +75,187 @@ pending_chats = {}
 
 # --- 5. Bot Events ---
 
-@bot.event
+@client.event
 async def on_ready():
     """Called when the bot successfully connects to Discord."""
 
-    # We don't need to sync the tree, py-cord does it on startup.
-    # ADDED a version number so we know this file is running.
-    print(f'Sprint 1 Bot (v1.9 - SINK/PEP508 FIX) is online. Logged in as {bot.user}')
-    await bot.change_presence(activity=discord.Game(name="Waiting for commands..."))
+    # We must sync the command tree
+    try:
+        await tree.sync()
+        print("Command tree synced.")
+    except Exception as e:
+        print(f"Error syncing command tree: {e}")
 
+    print(f'Sprint 1 Bot (v2.1 - SINK/GitHub FIX) is online. Logged in as {client.user}')
+    await client.change_presence(activity=discord.Game(name="Waiting for commands..."))
 
-# We don't need on_message, so it's removed.
 
 # --- 6. Slash Commands (Text) ---
 
-# This is the new decorator for py-cord
-@bot.slash_command(name="ask", description="Ask a question to the Gemini AI.")
-async def ask(ctx: discord.ApplicationContext, prompt: str):
+@tree.command(name="ask", description="Ask a question to the Gemini AI.")
+async def ask(interaction: discord.Interaction, prompt: str):
     """Handles the /ask slash command."""
 
-    # py-cord uses ctx (Context) instead of interaction
-    # and ctx.defer() instead of interaction.response.defer()
-    await ctx.defer()
+    await interaction.response.defer()
 
     try:
-        print(f"User '{ctx.author.name}' asked: {prompt}")
+        print(f"User '{interaction.user.name}' asked: {prompt}")
 
         chat_session = gemini_model.start_chat(history=[])
         response = await chat_session.send_message_async(prompt)
 
-        # We pass the context to our helper
-        await send_long_message(ctx, response.text)
+        await send_long_message(interaction, response.text)
 
     except Exception as e:
         print(f"An error occurred while processing Gemini request: {e}")
-        # Use followup since we deferred
-        await ctx.followup.send(f"An error occurred: {e}", ephemeral=True)
+        await interaction.followup.send(f"An error occurred: {e}", ephemeral=True)
 
 
 # --- 7. Slash Commands (Voice) ---
 
-@bot.slash_command(name="join", description="Joins your current voice channel.")
-async def join(ctx: discord.ApplicationContext):
+@tree.command(name="join", description="Joins your current voice channel.")
+async def join(interaction: discord.Interaction):
     """Handles the /join slash command."""
 
-    # *** THIS IS THE FIX FOR THE "Unknown Interaction" ERROR ***
-    # We defer immediately to prevent the "Unknown Interaction"
-    # error if the firewall (522) causes a timeout.
-    await ctx.defer()
+    await interaction.response.defer()
 
-    if not ctx.author.voice:
-        await ctx.followup.send("You're not in a voice channel, meat-bag. Where am I supposed to go?", ephemeral=True)
+    if not interaction.user.voice:
+        await interaction.followup.send("You're not in a voice channel, meat-bag. Where am I supposed to go?",
+                                        ephemeral=True)
         return
 
-    voice_channel = ctx.author.voice.channel
+    voice_channel = interaction.user.voice.channel
 
-    if ctx.guild.voice_client:
-        if ctx.guild.voice_client.channel == voice_channel:
-            await ctx.followup.send("I'm already *in* your channel. Are you paying attention?", ephemeral=True)
+    if interaction.guild.voice_client:
+        if interaction.guild.voice_client.channel == voice_channel:
+            await interaction.followup.send("I'm already *in* your channel. Are you paying attention?", ephemeral=True)
             return
         try:
-            await ctx.guild.voice_client.move_to(voice_channel)
-            await ctx.followup.send(f"Fine, I'm moving to `{voice_channel.name}`.")
+            await interaction.guild.voice_client.move_to(voice_channel)
+            await interaction.followup.send(f"Fine, I'm moving to `{voice_channel.name}`.")
         except Exception as e:
-            await ctx.followup.send(f"I had a problem moving channels: {e}")
+            await interaction.followup.send(f"I had a problem moving channels: {e}")
         return
 
     try:
         await voice_channel.connect()
-        # Use followup since we deferred
-        await ctx.followup.send(f"Okay, I'm in `{voice_channel.name}`. What do you want?")
+        await interaction.followup.send(f"Okay, I'm in `{voice_channel.name}`. What do you want?")
     except discord.errors.ClientException as e:
-        await ctx.followup.send(f"Error connecting to voice: {e}", ephemeral=True)
+        await interaction.followup.send(f"Error connecting to voice: {e}", ephemeral=True)
     except Exception as e:
-        # This is where the 522 firewall error will get caught
         print(f"An error occurred during /join: {e}")
-        await ctx.followup.send(f"An unknown error occurred (maybe a firewall?): {e}", ephemeral=True)
+        await interaction.followup.send(f"An unknown error occurred (maybe a firewall?): {e}", ephemeral=True)
 
 
-@bot.slash_command(name="leave", description="Leaves the voice channel it is currently in.")
-async def leave(ctx: discord.ApplicationContext):
+@tree.command(name="leave", description="Leaves the voice channel it is currently in.")
+async def leave(interaction: discord.Interaction):
     """Handles the /leave slash command."""
 
-    # This command is fast, so defer() isn't strictly needed.
-    # But we add it for consistency.
-    await ctx.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
 
-    if not ctx.guild.voice_client:
-        await ctx.followup.send("I'm not in a voice channel, so I can't leave. Obviously.")
+    if not interaction.guild.voice_client:
+        await interaction.followup.send("I'm not in a voice channel, so I can't leave. Obviously.")
         return
 
     try:
-        current_channel = ctx.guild.voice_client.channel.name
-        await ctx.guild.voice_client.disconnect()
-        await ctx.followup.send(f"Alright, I'm leaving `{current_channel}`. It was getting boring anyway.")
+        current_channel = interaction.guild.voice_client.channel.name
+        await interaction.guild.voice_client.disconnect()
+        await interaction.followup.send(f"Alright, I'm leaving `{current_channel}`. It was getting boring anyway.")
     except Exception as e:
-        await ctx.followup.send(f"I had a problem leaving: {e}")
+        await interaction.followup.send(f"I had a problem leaving: {e}")
 
 
 # --- 8. Slash Command (TTS Test) ---
 
-@bot.slash_command(name="say", description="Speaks the given text in your voice channel.")
-async def say(ctx: discord.ApplicationContext, text: str):
+@tree.command(name="say", description="Speaks the given text in your voice channel.")
+async def say(interaction: discord.Interaction, text: str):
     """Handles the /say slash command for TTS."""
 
-    if not ctx.author.voice:
-        await ctx.respond("You need to be in a voice channel for me to speak, meat-bag.", ephemeral=True)
+    if not interaction.user.voice:
+        await interaction.response.send_message("You need to be in a voice channel for me to speak, meat-bag.",
+                                                ephemeral=True)
         return
 
-    voice_channel = ctx.author.voice.channel
-    await ctx.defer()
+    voice_channel = interaction.user.voice.channel
+    await interaction.response.defer()
 
-    voice_client = ctx.guild.voice_client
+    voice_client = interaction.guild.voice_client
     if not voice_client:
         try:
             voice_client = await voice_channel.connect()
         except Exception as e:
-            await ctx.followup.send(f"Failed to connect to voice channel (firewall?): {e}")
+            await interaction.followup.send(f"Failed to connect to voice channel (firewall?): {e}")
             return
     elif voice_client.channel != voice_channel:
         try:
             await voice_client.move_to(voice_channel)
         except Exception as e:
-            await ctx.followup.send(f"Failed to move to your voice channel: {e}")
+            await interaction.followup.send(f"Failed to move to your voice channel: {e}")
             return
 
     try:
-        # Pass the context (ctx) to the helper
-        await speak_text(ctx, text)
-        await ctx.followup.send(f"I said: \"{text}\"")
+        await speak_text(interaction, text)
+        await interaction.followup.send(f"I said: \"{text}\"")
 
     except Exception as e:
         print(f"Error during /say command: {e}")
-        await ctx.followup.send(f"An error occurred while trying to speak: {e}")
+        await interaction.followup.send(f"An error occurred while trying to speak: {e}")
 
 
 # --- 9. Slash Command (Core Loop) ---
 
-@bot.slash_command(name="chat", description="Have a one-shot voice conversation with the AI.")
-async def chat(ctx: discord.ApplicationContext):
+@tree.command(name="chat", description="Have a one-shot voice conversation with the AI.")
+async def chat(interaction: discord.Interaction):
     """
     Handles the full STT -> Gemini -> TTS loop.
     """
-    if not ctx.author.voice:
-        await ctx.respond("You need to be in a voice channel to chat, meat-bag.", ephemeral=True)
+    if not interaction.user.voice:
+        await interaction.response.send_message("You need to be in a voice channel to chat, meat-bag.", ephemeral=True)
         return
 
-    voice_channel = ctx.author.voice.channel
-    await ctx.defer()
+    voice_channel = interaction.user.voice.channel
+    await interaction.response.defer()
 
-    voice_client = ctx.guild.voice_client
+    voice_client = interaction.guild.voice_client
     if not voice_client:
         try:
             voice_client = await voice_channel.connect()
         except Exception as e:
-            await ctx.followup.send(f"Failed to connect to voice channel (firewall?): {e}")
+            await interaction.followup.send(f"Failed to connect to voice channel (firewall?): {e}")
             return
     elif voice_client.channel != voice_channel:
         try:
             await voice_client.move_to(voice_channel)
         except Exception as e:
-            await ctx.followup.send(f"Failed to move to your voice channel: {e}")
+            await interaction.followup.send(f"Failed to move to your voice channel: {e}")
             return
 
     if voice_client.is_playing():
         voice_client.stop()
 
-    # We now assume .stop_listening() exists because py-cord[sink] is installed
+    # We now assume .stop_listening() exists because discord-ext-voice-recv is installed
     voice_client.stop_listening()
 
     try:
-        await speak_text(ctx, "I'm listening...")
-        # Send this *after* speaking, as followup can only be used once.
-        await ctx.followup.send("I'm listening... (Will stop after 10s of silence)")
+        await speak_text(interaction, "I'm listening...")
+        await interaction.followup.send("I'm listening... (Will stop after 10s of silence)")
 
-        # Wait for speech to finish before listening
         while voice_client.is_playing():
             await asyncio.sleep(0.1)
 
     except Exception as e:
-        # Check if we already sent the followup
-        if not ctx.interaction.response.is_done():
-            await ctx.followup.send(f"Error speaking: {e}")
+        if not interaction.response.is_done():
+            await interaction.followup.send(f"Error speaking: {e}")
         else:
-            await ctx.channel.send(f"Error speaking: {e}")
+            await interaction.channel.send(f"Error speaking: {e}")
         return
 
-    filename = f"rec_{ctx.interaction.id}_{int(time.time())}.wav"
-    pending_chats[filename] = ctx  # Store the context
+    filename = f"rec_{interaction.id}_{int(time.time())}.wav"
+    pending_chats[filename] = interaction  # Store the interaction
 
     print(f"Starting recording for {filename}")
 
-    # We now assume .listen() exists because py-cord[sink] is installed
+    # We now assume .listen() exists because discord-ext-voice-recv is installed
     voice_client.listen(
         discord.sinks.WaveSink(filename),
         after=after_recording_callback,
@@ -287,27 +275,27 @@ def after_recording_callback(sink: discord.sinks.WaveSink, exception: Exception 
     filename = sink.filename
     print(f"Recording finished: {filename}")
 
-    ctx = pending_chats.pop(filename, None)
-    if not ctx:
-        print(f"Error: Could not find pending context for {filename}")
+    interaction = pending_chats.pop(filename, None)
+    if not interaction:
+        print(f"Error: Could not find pending interaction for {filename}")
         return
 
-    # Use bot.loop (from our Bot object) to schedule the async task
-    bot.loop.call_soon_threadsafe(
+    # Use client.loop (from our Client object) to schedule the async task
+    client.loop.call_soon_threadsafe(
         process_audio_task,
-        ctx,
+        interaction,
         filename
     )
 
 
-def process_audio_task(ctx: discord.ApplicationContext, filename: str):
+def process_audio_task(interaction: discord.Interaction, filename: str):
     """
     A helper function to schedule the async processing task.
     """
-    bot.loop.create_task(handle_audio_processing(ctx, filename))
+    client.loop.create_task(handle_audio_processing(interaction, filename))
 
 
-async def handle_audio_processing(ctx: discord.ApplicationContext, filename: str):
+async def handle_audio_processing(interaction: discord.Interaction, filename: str):
     """
     This is the async function that does all the work.
     STT -> Gemini -> TTS -> Play
@@ -315,7 +303,7 @@ async def handle_audio_processing(ctx: discord.ApplicationContext, filename: str
     try:
         print(f"Processing STT for {filename}...")
 
-        stt_recognize = bot.loop.run_in_executor(
+        stt_recognize = client.loop.run_in_executor(
             None,
             transcribe_audio_file,
             filename
@@ -323,11 +311,11 @@ async def handle_audio_processing(ctx: discord.ApplicationContext, filename: str
         transcript = await stt_recognize
 
         if not transcript:
-            await ctx.channel.send("I didn't hear anything, meat-bag. Try again.")
+            await interaction.channel.send("I didn't hear anything, meat-bag. Try again.")
             os.remove(filename)
             return
 
-        await ctx.channel.send(f"You said: \"{transcript}\"")
+        await interaction.channel.send(f"You said: \"{transcript}\"")
         print(f"STT Transcript: {transcript}")
 
         print("Sending transcript to Gemini...")
@@ -335,23 +323,22 @@ async def handle_audio_processing(ctx: discord.ApplicationContext, filename: str
         response = await chat_session.send_message_async(transcript)
         gemini_response = response.text
 
-        await ctx.channel.send(f"**Skippy:** {gemini_response}")
+        await interaction.channel.send(f"**Skippy:** {gemini_response}")
         print(f"Gemini Response: {gemini_response}")
 
         print("Synthesizing Gemini response...")
 
-        await speak_text(ctx, gemini_response)
+        await speak_text(interaction, gemini_response)
 
     except Exception as e:
         print(f"Error in handle_audio_processing: {e}")
         try:
-            # Check if we already sent the followup
-            if not ctx.interaction.response.is_done():
-                await ctx.followup.send(f"An error occurred during processing: {e}", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.followup.send(f"An error occurred during processing: {e}", ephemeral=True)
             else:
-                await ctx.channel.send(f"An error occurred during processing: {e}")
+                await interaction.channel.send(f"An error occurred during processing: {e}")
         except discord.errors.InteractionResponded:
-            await ctx.channel.send(f"An error occurred during processing: {e}")
+            await interaction.channel.send(f"An error occurred during processing: {e}")
     finally:
         if os.path.exists(filename):
             os.remove(filename)
@@ -387,7 +374,7 @@ def transcribe_audio_file(filename: str) -> str:
         return ""
 
 
-async def speak_text(ctx: discord.ApplicationContext, text: str):
+async def speak_text(interaction: discord.Interaction, text: str):
     """
     [Async Function]
     Our helper function from /say, now reusable.
@@ -409,8 +396,8 @@ async def speak_text(ctx: discord.ApplicationContext, text: str):
             audio_config=audio_config
         )
 
-        # Use bot.loop for the executor
-        response = await bot.loop.run_in_executor(
+        # Use client.loop for the executor
+        response = await client.loop.run_in_executor(
             None,
             tts_client.synthesize_speech,
             request
@@ -418,7 +405,7 @@ async def speak_text(ctx: discord.ApplicationContext, text: str):
 
         # --- FIX: Re-fetch the voice client ---
         # The old voice_client object might be stale after the await.
-        voice_client = ctx.guild.voice_client
+        voice_client = interaction.guild.voice_client
         if not voice_client:
             print("Voice client is gone, cannot speak.")
             return
@@ -448,7 +435,7 @@ def after_speech_cleanup(error, filename):
 
 
 # --- 10. Helper Function ---
-async def send_long_message(ctx: discord.ApplicationContext, text: str):
+async def send_long_message(interaction: discord.Interaction, text: str):
     """Sends a long message, splitting it into chunks if necessary."""
 
     chunks = []
@@ -468,33 +455,32 @@ async def send_long_message(ctx: discord.ApplicationContext, text: str):
         # Send the first chunk using followup.send
         first_chunk = chunks.pop(0)
         # Check if we already responded (e.g., in a race condition)
-        if not ctx.interaction.response.is_done():
-            await ctx.followup.send(first_chunk)
+        if not interaction.response.is_done():
+            await interaction.followup.send(first_chunk)
         else:
-            await ctx.channel.send(first_chunk)
+            await interaction.channel.send(first_chunk)
 
         # Send subsequent chunks as new messages in the channel
         for chunk in chunks:
             if chunk:  # ensure chunk is not empty
-                await ctx.channel.send(chunk)
+                await interaction.channel.send(chunk)
 
     except discord.errors.InteractionResponded:
         # If we already responded (e.g., in a race condition)
         # just send all chunks to the channel
-        await ctx.channel.send(first_chunk)
+        await interaction.channel.send(first_chunk)
         for chunk in chunks:
             if chunk:
-                await ctx.channel.send(chunk)
+                await interaction.channel.send(chunk)
     except Exception as e:
         print(f"Error in send_long_message: {e}")
         # Fallback for safety
-        await ctx.channel.send("An error occurred while splitting the message.")
+        await interaction.channel.send("An error occurred while splitting the message.")
 
 
 # --- 11. Run the Bot ---
-# THIS IS THE LINE THAT WAS MISSING
 try:
-    bot.run(DISCORD_TOKEN)  # Use bot.run, not client.run
+    client.run(DISCORD_TOKEN)  # Use client.run
 except Exception as e:
     print(f"An error occurred while running the bot: {e}")
     print("This might be a simple config error (wrong token) or a network issue.")
