@@ -82,7 +82,7 @@ async def on_ready():
 
     # We don't need to sync the tree, py-cord does it on startup.
     # ADDED a version number so we know this file is running.
-    print(f'Sprint 1 Bot (v1.4 - Duct-Tape Fix) is online. Logged in as {bot.user}')
+    print(f'Sprint 1 Bot (v1.5 - SINK FIX) is online. Logged in as {bot.user}')
     await bot.change_presence(activity=discord.Game(name="Waiting for commands..."))
 
 
@@ -242,17 +242,9 @@ async def chat(ctx: discord.ApplicationContext):
     if voice_client.is_playing():
         voice_client.stop()
 
-    # --- THIS IS THE "DUCT-TAPE" FIX ---
-    # We try to stop listening. If the method doesn't exist
-    # (because [sinks] is broken), we print a warning
-    # instead of crashing the whole command.
-    try:
-        voice_client.stop_listening()
-    except AttributeError:
-        print("WARNING: 'stop_listening' attribute not found. Is py-cord[sinks] installed correctly?")
-        # We can continue, as this just means nothing was listening anyway.
-    except Exception as e:
-        print(f"An unexpected error occurred trying to stop_listening: {e}")
+    # --- The duct-tape is GONE. ---
+    # We now expect .stop_listening() to exist.
+    voice_client.stop_listening()
 
     try:
         await speak_text(ctx, "I'm listening...")
@@ -275,18 +267,14 @@ async def chat(ctx: discord.ApplicationContext):
     pending_chats[filename] = ctx  # Store the context
 
     print(f"Starting recording for {filename}")
-    try:
-        voice_client.listen(
-            discord.sinks.WaveSink(filename),
-            after=after_recording_callback,
-            timeout=10.0
-        )
-    except AttributeError:
-        print("FATAL ERROR: 'listen' attribute not found. py-cord[sinks] is NOT installed.")
-        await ctx.channel.send("I can't listen! My 'sinks' (ears) are missing. Tell my boss to fix the installation.")
-    except Exception as e:
-        print(f"An error occurred trying to listen: {e}")
-        await ctx.channel.send(f"I tried to listen, but something broke: {e}")
+
+    # --- The duct-tape is GONE. ---
+    # We now expect .listen() to exist.
+    voice_client.listen(
+        discord.sinks.WaveSink(filename),
+        after=after_recording_callback,
+        timeout=10.0
+    )
 
 
 def after_recording_callback(sink: discord.sinks.WaveSink, exception: Exception = None):
