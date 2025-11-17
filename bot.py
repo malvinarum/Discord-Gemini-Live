@@ -236,6 +236,15 @@ async def chat(interaction: discord.Interaction):
         except Exception as e:
             await interaction.followup.send(f"Failed to connect to voice channel (firewall?): {e}")
             return
+    elif not isinstance(voice_client, voice_recv.VoiceRecvClient):
+        # If we're connected, but not with the *right* client
+        print("Connecting with standard client, switching to VoiceRecvClient...")
+        await voice_client.disconnect()
+        try:
+            voice_client = await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
+        except Exception as e:
+            await interaction.followup.send(f"Failed to switch to listening client: {e}")
+            return
     elif voice_client.channel != voice_channel:
         try:
             await voice_client.move_to(voice_channel)
