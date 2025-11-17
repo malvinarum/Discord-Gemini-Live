@@ -3,6 +3,7 @@ import discord
 import google.generativeai as genai
 from dotenv import load_dotenv
 from discord import app_commands
+from discord import sinks  # <-- Force-importing the sinks module
 from google.cloud import texttospeech
 from google.cloud import speech  # <-- New import for STT
 import wave  # <-- New import for saving audio
@@ -312,7 +313,7 @@ async def chat(interaction: discord.Interaction):
 
     print(f"Starting recording for {filename}")
     voice_client.listen(
-        discord.sinks.WaveSink(filename),
+        sinks.WaveSink(filename),  # <-- Using the explicit import
         after=after_recording_callback,
         timeout=10.0  # Stop after 10 seconds of silence
     )
@@ -320,7 +321,7 @@ async def chat(interaction: discord.Interaction):
     # We already sent the followup, so we're good.
 
 
-def after_recording_callback(sink: discord.sinks.WaveSink, exception: Exception = None):
+def after_recording_callback(sink: sinks.WaveSink, exception: Exception = None):  # <-- Using the explicit import
     """
     This function is called *after* the recording stops.
     It runs in a separate thread, so we CANNOT use async Discord methods here.
@@ -557,7 +558,7 @@ async def send_long_message(interaction: discord.Interaction, text: str):
                 await interaction.channel.send(chunk)
 
 
-# --- 11. Run the Bot ---
+# --- 1. Run the Bot ---
 try:
     client.run(DISCORD_TOKEN)
 except Exception as e:
