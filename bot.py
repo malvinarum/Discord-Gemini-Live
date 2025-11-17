@@ -27,10 +27,10 @@ else:
 try:
     genai.configure(api_key=GEMINI_API_KEY)
     generation_config = {
-        "temperature": 1,
+        "temperature": 1.2,
         "top_p": 0.95,
         "top_k": 64,
-        "max_output_tokens": 256,
+        "max_output_tokens": 512,
         "response_mime_type": "text/plain",
     }
 
