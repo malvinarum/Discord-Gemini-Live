@@ -35,7 +35,7 @@ try:
     system_instruction = BOT_PERSONALITY
 
     gemini_model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash-latest",  # Using Flash for speed
+        model_name="gemini-2.5-flash",  # Using 2.5-flash (stable) instead of 1.5-flash-latest (retired)
         generation_config=generation_config,
         system_instruction=system_instruction,  # <-- Now using your defined personality
     )
