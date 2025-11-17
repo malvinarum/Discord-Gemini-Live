@@ -15,6 +15,7 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 BOT_PERSONALITY = os.getenv('BOT_PERSONALITY', 'You are a helpful, witty, and concise assistant.')
+TTS_VOICE_NAME = os.getenv('TTS_VOICE_NAME', 'en-US-WaveNet-D')  # Default to a good voice
 
 GOOGLE_SERVICE_JSON = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
 if GOOGLE_SERVICE_JSON and os.path.exists(GOOGLE_SERVICE_JSON):
@@ -429,7 +430,7 @@ async def speak_text(interaction: discord.Interaction, text: str):
         synthesis_input = texttospeech.SynthesisInput(text=text)
         voice = texttospeech.VoiceSelectionParams(
             language_code="en-US",
-            ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
+            name=TTS_VOICE_NAME  # Use the configured voice name
         )
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3
