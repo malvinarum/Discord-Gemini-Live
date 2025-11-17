@@ -70,10 +70,6 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
 
-# --- 4.5. Global State ---
-# We no longer need this, we will pass the interaction via the lambda
-# pending_chats = {}
-
 # --- 5. Bot Events ---
 
 @client.event
@@ -87,7 +83,7 @@ async def on_ready():
     except Exception as e:
         print(f"Error syncing command tree: {e}")
 
-    print(f'Sprint 1 Bot (v2.4 - Lambda FIX) is online. Logged in as {client.user}')
+    print(f'Sprint 1 Bot (v2.5 - Filename FIX) is online. Logged in as {client.user}')
     await client.change_presence(activity=discord.Game(name="Waiting for commands..."))
 
 
@@ -190,6 +186,14 @@ async def say(interaction: discord.Interaction, text: str):
             voice_client = await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
         except Exception as e:
             await interaction.followup.send(f"Failed to connect to voice channel (firewall?): {e}")
+            return
+    elif not isinstance(voice_client, voice_recv.VoiceRecvClient):
+        print("Switching to VoiceRecvClient for /say...")
+        await voice_client.disconnect()
+        try:
+            voice_client = await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
+        except Exception as e:
+            await interaction.followup.send(f"Failed to switch to listening client: {e}")
             return
     elif voice_client.channel != voice_channel:
         try:
@@ -299,9 +303,9 @@ def after_recording_callback(interaction: discord.Interaction, sink: voice_recv.
         print(f"Error during recording: {exception}")
         return
 
-    # --- THE v2.4 FIX ---
-    # The sink is now passed correctly, so sink.filename will work.
-    filename = sink.filename
+    # --- THE v2.5 ONE-LINE FIX ---
+    # The attribute is .destination, not .filename!
+    filename = sink.destination
     print(f"Recording finished: {filename}")
 
     # We no longer need pending_chats, we have the interaction!
@@ -341,7 +345,10 @@ async def handle_audio_processing(interaction: discord.Interaction, filename: st
 
         if not transcript:
             await interaction.channel.send("I didn't hear anything, meat-bag. Try again.")
-            os.remove(filename)
+            try:
+                os.remove(filename)
+            except OSError as e:
+                print(f"Error cleaning up {filename}: {e}")
             return
 
         await interaction.channel.send(f"You said: \"{transcript}\"")
@@ -370,8 +377,11 @@ async def handle_audio_processing(interaction: discord.Interaction, filename: st
             await interaction.channel.send(f"An error occurred during processing: {e}")
     finally:
         if os.path.exists(filename):
-            os.remove(filename)
-        print(f"Cleaned up {filename}")
+            try:
+                os.remove(filename)
+                print(f"Cleaned up {filename}")
+            except OSError as e:
+                print(f"Error cleaning up {filename}: {e}")
 
 
 def transcribe_audio_file(filename: str) -> str:
@@ -459,8 +469,11 @@ def after_speech_cleanup(error, filename):
     if error:
         print(f'Error after playing: {error}')
     if os.path.exists(filename):
-        os.remove(filename)
-        print(f"Cleaned up TTS file: {filename}")
+        try:
+            os.remove(filename)
+            print(f"Cleaned up TTS file: {filename}")
+        except OSError as e:
+            print(f"Error cleaning up TTS file {filename}: {e}")
 
 
 # --- 10. Helper Function ---
