@@ -8,7 +8,7 @@ from google.cloud import speech
 import wave
 import time
 import asyncio  # <-- Using this for the wait_for_speech_to_finish
-import discord.sinks  # <-- This will work now!
+from discord.ext import voice_recv  # <--- THE FIX IS HERE
 
 # --- 1. Load Configuration ---
 load_dotenv()
@@ -86,7 +86,7 @@ async def on_ready():
     except Exception as e:
         print(f"Error syncing command tree: {e}")
 
-    print(f'Sprint 1 Bot (v2.1 - SINK/GitHub FIX) is online. Logged in as {client.user}')
+    print(f'Sprint 1 Bot (v2.2 - REAL SINK FIX) is online. Logged in as {client.user}')
     await client.change_presence(activity=discord.Game(name="Waiting for commands..."))
 
 
@@ -131,6 +131,7 @@ async def join(interaction: discord.Interaction):
             await interaction.followup.send("I'm already *in* your channel. Are you paying attention?", ephemeral=True)
             return
         try:
+            # We don't need cls= here, because the client is already the correct class
             await interaction.guild.voice_client.move_to(voice_channel)
             await interaction.followup.send(f"Fine, I'm moving to `{voice_channel.name}`.")
         except Exception as e:
@@ -138,7 +139,9 @@ async def join(interaction: discord.Interaction):
         return
 
     try:
-        await voice_channel.connect()
+        # --- THE FIX IS HERE ---
+        # We must connect with the correct class to get the "ears"
+        await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
         await interaction.followup.send(f"Okay, I'm in `{voice_channel.name}`. What do you want?")
     except discord.errors.ClientException as e:
         await interaction.followup.send(f"Error connecting to voice: {e}", ephemeral=True)
@@ -182,7 +185,8 @@ async def say(interaction: discord.Interaction, text: str):
     voice_client = interaction.guild.voice_client
     if not voice_client:
         try:
-            voice_client = await voice_channel.connect()
+            # --- THE FIX IS HERE ---
+            voice_client = await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
         except Exception as e:
             await interaction.followup.send(f"Failed to connect to voice channel (firewall?): {e}")
             return
@@ -216,10 +220,11 @@ async def chat(interaction: discord.Interaction):
     voice_channel = interaction.user.voice.channel
     await interaction.response.defer()
 
-    voice_client = interaction.guild.voice_client
+    voice_client: voice_recv.VoiceRecvClient = interaction.guild.voice_client  # Type hint for clarity
     if not voice_client:
         try:
-            voice_client = await voice_channel.connect()
+            # --- THE FIX IS HERE ---
+            voice_client = await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
         except Exception as e:
             await interaction.followup.send(f"Failed to connect to voice channel (firewall?): {e}")
             return
@@ -233,7 +238,8 @@ async def chat(interaction: discord.Interaction):
     if voice_client.is_playing():
         voice_client.stop()
 
-    # We now assume .stop_listening() exists because discord-ext-voice-recv is installed
+    # --- THE FIX IS HERE ---
+    # This will now work because voice_client is a VoiceRecvClient
     voice_client.stop_listening()
 
     try:
@@ -255,15 +261,16 @@ async def chat(interaction: discord.Interaction):
 
     print(f"Starting recording for {filename}")
 
-    # We now assume .listen() exists because discord-ext-voice-recv is installed
+    # --- THE FIX IS HERE ---
+    # We use voice_recv.WaveSink, not discord.sinks.WaveSink
     voice_client.listen(
-        discord.sinks.WaveSink(filename),
+        voice_recv.WaveSink(filename),  # <--- THE FIX
         after=after_recording_callback,
         timeout=10.0
     )
 
 
-def after_recording_callback(sink: discord.sinks.WaveSink, exception: Exception = None):
+def after_recording_callback(sink: voice_recv.WaveSink, exception: Exception = None):  # <--- THE FIX
     """
     This function is called *after* the recording stops.
     It runs in a separate thread, so we CANNOT use async Discord methods here.
