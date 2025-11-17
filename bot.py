@@ -82,7 +82,7 @@ async def on_ready():
 
     # We don't need to sync the tree, py-cord does it on startup.
     # ADDED a version number so we know this file is running.
-    print(f'Sprint 1 Bot (v1.2 - FINAL) is online. Logged in as {bot.user}')
+    print(f'Sprint 1 Bot (v1.3 - is_listening Fix) is online. Logged in as {bot.user}')
     await bot.change_presence(activity=discord.Game(name="Waiting for commands..."))
 
 
@@ -241,8 +241,11 @@ async def chat(ctx: discord.ApplicationContext):
 
     if voice_client.is_playing():
         voice_client.stop()
-    if voice_client.is_listening():
-        voice_client.stop_listening()
+
+    # --- THIS IS THE FIX ---
+    # We don't need to check, just tell it to stop.
+    # py-cord is smart enough to handle this.
+    voice_client.stop_listening()
 
     try:
         await speak_text(ctx, "I'm listening...")
