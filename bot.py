@@ -242,8 +242,7 @@ async def chat(ctx: discord.ApplicationContext):
     if voice_client.is_playing():
         voice_client.stop()
 
-    # --- The duct-tape is GONE. ---
-    # We now expect .stop_listening() to exist.
+    # --- The duct-tape is GONE. We assume the function exists now. ---
     voice_client.stop_listening()
 
     try:
@@ -267,9 +266,7 @@ async def chat(ctx: discord.ApplicationContext):
     pending_chats[filename] = ctx  # Store the context
 
     print(f"Starting recording for {filename}")
-
-    # --- The duct-tape is GONE. ---
-    # We now expect .listen() to exist.
+    # --- The duct-tape is GONE. We assume the function exists now. ---
     voice_client.listen(
         discord.sinks.WaveSink(filename),
         after=after_recording_callback,
