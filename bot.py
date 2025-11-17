@@ -86,7 +86,7 @@ async def on_ready():
     except Exception as e:
         print(f"Error syncing command tree: {e}")
 
-    print(f'Sprint 1 Bot (v2.2 - REAL SINK FIX) is online. Logged in as {client.user}')
+    print(f'Sprint 1 Bot (v2.3 - Timeout FIX) is online. Logged in as {client.user}')
     await client.change_presence(activity=discord.Game(name="Waiting for commands..."))
 
 
@@ -208,6 +208,13 @@ async def say(interaction: discord.Interaction, text: str):
 
 # --- 9. Slash Command (Core Loop) ---
 
+async def stop_listening_after(voice_client: voice_recv.VoiceRecvClient, delay: float):
+    """Helper coroutine to stop listening after a delay."""
+    await asyncio.sleep(delay)
+    print(f"10-second timeout reached. Stopping listening.")
+    voice_client.stop_listening()
+
+
 @tree.command(name="chat", description="Have a one-shot voice conversation with the AI.")
 async def chat(interaction: discord.Interaction):
     """
@@ -262,12 +269,16 @@ async def chat(interaction: discord.Interaction):
     print(f"Starting recording for {filename}")
 
     # --- THE FIX IS HERE ---
-    # We use voice_recv.WaveSink, not discord.sinks.WaveSink
+    # We use voice_recv.WaveSink, and we REMOVE the timeout argument
     voice_client.listen(
         voice_recv.WaveSink(filename),  # <--- THE FIX
-        after=after_recording_callback,
-        timeout=10.0
+        after=after_recording_callback
+        # timeout=10.0 # <--- THIS WAS THE BUG
     )
+
+    # --- THE NEW FIX ---
+    # Manually start a 10-second timer to stop the recording
+    client.loop.create_task(stop_listening_after(voice_client, 10.0))
 
 
 def after_recording_callback(sink: voice_recv.WaveSink, exception: Exception = None):  # <--- THE FIX
