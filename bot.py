@@ -3,7 +3,7 @@ import discord
 import google.generativeai as genai
 from dotenv import load_dotenv
 from discord import app_commands
-from google.cloud import texttospeech  # <-- New import for TTS
+from google.cloud import texttospeech  # <-- Import is the same
 
 # --- 1. Load Configuration ---
 load_dotenv()
@@ -47,7 +47,10 @@ except Exception as e:
 try:
     # This client will automatically find and use the credentials
     # we set in os.environ['GOOGLE_APPLICATION_CREDENTIALS']
-    tts_client = texttospeech.TextToSpeechAsyncClient()
+
+    # --- THIS IS THE FIRST CHANGE ---
+    # We are switching to the SYNCHRONOUS client to avoid event loop conflicts.
+    tts_client = texttospeech.TextToSpeechClient()
     print("Google Cloud TTS client configured successfully.")
 except Exception as e:
     print(f"Error configuring Google Cloud TTS: {e}")
@@ -220,25 +223,29 @@ async def say(interaction: discord.Interaction, text: str):
     # 4. Synthesize Speech
     try:
         print(f"Synthesizing speech for: '{text}'")
-        synthesis_input = texttospeech.SynthesisInput(text=text)
 
-        # Configure the voice
+        # --- THIS IS THE SECOND CHANGE ---
+        # We configure the request objects in the main (async) thread
+        synthesis_input = texttospeech.SynthesisInput(text=text)
         voice = texttospeech.VoiceSelectionParams(
             language_code="en-US",
             ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
         )
-
-        # Configure the audio format
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3
         )
 
-        # Request TTS
-        response = await tts_client.synthesize_speech(
-            input=synthesis_input,
-            voice=voice,
-            audio_config=audio_config
+        # Then, we run the BLOCKING tts_client.synthesize_speech call
+        # in a separate thread using client.loop.run_in_executor.
+        # This prevents it from blocking the bot or conflicting with the event loop.
+        response = await client.loop.run_in_executor(
+            None,  # Use the default thread pool
+            tts_client.synthesize_speech,  # The blocking function to run
+            synthesis_input,  # First argument for the function
+            voice,  # Second argument
+            audio_config  # Third argument
         )
+        # The 'await' waits for the thread to finish, then we continue.
 
         # 5. Save audio to a temporary file
         temp_audio_file = "output.mp3"
