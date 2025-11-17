@@ -83,7 +83,7 @@ async def on_ready():
     except Exception as e:
         print(f"Error syncing command tree: {e}")
 
-    print(f'Sprint 1 Bot (v2.5 - Filename FIX) is online. Logged in as {client.user}')
+    print(f'Sprint 1 Bot (v2.6 - Filename Pass FIX) is online. Logged in as {client.user}')
     await client.change_presence(activity=discord.Game(name="Waiting for commands..."))
 
 
@@ -276,39 +276,39 @@ async def chat(interaction: discord.Interaction):
             await interaction.channel.send(f"Error speaking: {e}")
         return
 
+    # We still need to create the filename here
     filename = f"rec_{interaction.id}_{int(time.time())}.wav"
 
     print(f"Starting recording for {filename}")
 
-    # --- THE v2.4/v2.5 LAMBDA FIX ---
     # 1. Create the sink instance first
     sink = voice_recv.WaveSink(filename)
 
-    # 2. Pass a lambda to 'after' that includes the interaction and the sink
+    # 2. --- THE v2.6 FIX ---
+    # We pass the INTERACTION and the FILENAME (str) to the callback.
+    # We no longer pass the broken sink object.
     voice_client.listen(
         sink,
-        after=lambda e: after_recording_callback(interaction, sink, e)
+        after=lambda e: after_recording_callback(interaction, filename, e)
     )
 
     # 3. Manually start a 10-second timer to stop the recording
     client.loop.create_task(stop_listening_after(voice_client, 10.0))
 
 
-def after_recording_callback(interaction: discord.Interaction, sink: voice_recv.WaveSink, exception: Exception = None):
+def after_recording_callback(interaction: discord.Interaction, filename: str, exception: Exception = None):
     """
     This function is called *after* the recording stops.
-    We now receive the interaction and sink via the lambda.
+    We now receive the filename as a string.
     """
     if exception:
         print(f"Error during recording: {exception}")
         return
 
-    # --- THE v2.5 ONE-LINE FIX ---
-    # The attribute is .destination, not .filename!
-    filename = sink.destination
+    # --- THE v2.6 FIX ---
+    # We already have the filename! No .destination or .filename needed.
     print(f"Recording finished: {filename}")
 
-    # We no longer need pending_chats, we have the interaction!
     if not interaction:
         print(f"Error: Interaction was None in callback")
         return
