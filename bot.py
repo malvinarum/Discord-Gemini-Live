@@ -118,30 +118,36 @@ async def ask(ctx: discord.ApplicationContext, prompt: str):
 async def join(ctx: discord.ApplicationContext):
     """Handles the /join slash command."""
 
+    # We defer immediately to prevent the "Unknown Interaction"
+    # error if the firewall (522) causes a timeout.
+    await ctx.defer()
+
     if not ctx.author.voice:
-        await ctx.respond("You're not in a voice channel, meat-bag. Where am I supposed to go?", ephemeral=True)
+        await ctx.followup.send("You're not in a voice channel, meat-bag. Where am I supposed to go?", ephemeral=True)
         return
 
     voice_channel = ctx.author.voice.channel
 
     if ctx.guild.voice_client:
         if ctx.guild.voice_client.channel == voice_channel:
-            await ctx.respond("I'm already *in* your channel. Are you paying attention?", ephemeral=True)
+            await ctx.followup.send("I'm already *in* your channel. Are you paying attention?", ephemeral=True)
             return
         try:
             await ctx.guild.voice_client.move_to(voice_channel)
-            await ctx.respond(f"Fine, I'm moving to `{voice_channel.name}`.")
+            await ctx.followup.send(f"Fine, I'm moving to `{voice_channel.name}`.")
         except Exception as e:
-            await ctx.respond(f"I had a problem moving channels: {e}")
+            await ctx.followup.send(f"I had a problem moving channels: {e}")
         return
 
     try:
         await voice_channel.connect()
-        await ctx.respond(f"Okay, I'm in `{voice_channel.name}`. What do you want?")
+        await ctx.followup.send(f"Okay, I'm in `{voice_channel.name}`. What do you want?")
     except discord.errors.ClientException as e:
-        await ctx.respond(f"Error connecting to voice: {e}", ephemeral=True)
+        await ctx.followup.send(f"Error connecting to voice: {e}", ephemeral=True)
     except Exception as e:
-        await ctx.respond(f"An unknown error occurred: {e}", ephemeral=True)
+        # This is where the 522 firewall error will get caught
+        print(f"An error occurred during /join: {e}")
+        await ctx.followup.send(f"An unknown error occurred (maybe a firewall?): {e}", ephemeral=True)
 
 
 @bot.slash_command(name="leave", description="Leaves the voice channel it is currently in.")
@@ -188,7 +194,8 @@ async def say(ctx: discord.ApplicationContext, text: str):
             return
 
     try:
-        await speak_text(voice_client, text)
+        # Pass the context (ctx) to the helper
+        await speak_text(ctx, text)
         await ctx.followup.send(f"I said: \"{text}\"")
 
     except Exception as e:
@@ -230,7 +237,7 @@ async def chat(ctx: discord.ApplicationContext):
         voice_client.stop_listening()
 
     try:
-        await speak_text(voice_client, "I'm listening...")
+        await speak_text(ctx, "I'm listening...")
         await ctx.followup.send("I'm listening... (Will stop after 10s of silence)")
 
         while voice_client.is_playing():
@@ -315,12 +322,8 @@ async def handle_audio_processing(ctx: discord.ApplicationContext, filename: str
         print(f"Gemini Response: {gemini_response}")
 
         print("Synthesizing Gemini response...")
-        voice_client = ctx.guild.voice_client
-        if not voice_client:
-            print("Voice client is gone, cannot speak.")
-            return
 
-        await speak_text(voice_client, gemini_response)
+        await speak_text(ctx, gemini_response)
 
     except Exception as e:
         print(f"Error in handle_audio_processing: {e}")
@@ -363,10 +366,11 @@ def transcribe_audio_file(filename: str) -> str:
         return ""
 
 
-async def speak_text(voice_client: discord.VoiceClient, text: str):
+async def speak_text(ctx: discord.ApplicationContext, text: str):
     """
     [Async Function]
     Our helper function from /say, now reusable.
+    Re-fetches the voice_client to prevent "Not connected" errors.
     """
     try:
         print(f"Synthesizing speech for: '{text}'")
@@ -390,6 +394,13 @@ async def speak_text(voice_client: discord.VoiceClient, text: str):
             tts_client.synthesize_speech,
             request
         )
+
+        # --- FIX: Re-fetch the voice client ---
+        # The old voice_client object might be stale after the await.
+        voice_client = ctx.guild.voice_client
+        if not voice_client:
+            print("Voice client is gone, cannot speak.")
+            return
 
         temp_audio_file = f"tts_{int(time.time())}.mp3"
         with open(temp_audio_file, "wb") as out:
@@ -418,9 +429,6 @@ def after_speech_cleanup(error, filename):
 # --- 10. Helper Function ---
 async def send_long_message(ctx: discord.ApplicationContext, text: str):
     """Sends a long message, splitting it into chunks if necessary."""
-
-    # py-cord's context object is different.
-    # We'll use followup.send for the first message, and channel.send for the rest.
 
     chunks = []
     current_chunk = ""
