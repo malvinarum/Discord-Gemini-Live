@@ -69,6 +69,9 @@ intents.members = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
+# --- 4.5. Global State ---
+pending_chats = {}
+
 
 # --- 5. Bot Events ---
 
@@ -83,7 +86,7 @@ async def on_ready():
     except Exception as e:
         print(f"Error syncing command tree: {e}")
 
-    print(f'Sprint 1 Bot (v2.5 - Filename FIX) is online. Logged in as {client.user}')
+    print(f'Sprint 1 Bot (v2.2 - REAL SINK FIX) is online. Logged in as {client.user}')
     await client.change_presence(activity=discord.Game(name="Waiting for commands..."))
 
 
@@ -213,13 +216,6 @@ async def say(interaction: discord.Interaction, text: str):
 
 # --- 9. Slash Command (Core Loop) ---
 
-async def stop_listening_after(voice_client: voice_recv.VoiceRecvClient, delay: float):
-    """Helper coroutine to stop listening after a delay."""
-    await asyncio.sleep(delay)
-    print(f"10-second timeout reached. Stopping listening.")
-    voice_client.stop_listening()
-
-
 @tree.command(name="chat", description="Have a one-shot voice conversation with the AI.")
 async def chat(interaction: discord.Interaction):
     """
@@ -259,6 +255,7 @@ async def chat(interaction: discord.Interaction):
     if voice_client.is_playing():
         voice_client.stop()
 
+    # --- THE FIX IS HERE ---
     # This will now work because voice_client is a VoiceRecvClient
     voice_client.stop_listening()
 
@@ -277,40 +274,34 @@ async def chat(interaction: discord.Interaction):
         return
 
     filename = f"rec_{interaction.id}_{int(time.time())}.wav"
+    pending_chats[filename] = interaction  # Store the interaction
 
     print(f"Starting recording for {filename}")
 
-    # --- THE v2.4 LAMBDA FIX ---
-    # 1. Create the sink instance first
-    sink = voice_recv.WaveSink(filename)
-
-    # 2. Pass a lambda to 'after' that includes the interaction and the sink
+    # --- THE FIX IS HERE ---
+    # We use voice_recv.WaveSink
     voice_client.listen(
-        sink,
-        after=lambda e: after_recording_callback(interaction, sink, e)
+        voice_recv.WaveSink(filename),  # <--- THE FIX
+        after=after_recording_callback,
+        timeout=10.0  # This library's listen() *does* have a timeout!
     )
 
-    # 3. Manually start a 10-second timer to stop the recording
-    client.loop.create_task(stop_listening_after(voice_client, 10.0))
 
-
-def after_recording_callback(interaction: discord.Interaction, sink: voice_recv.WaveSink, exception: Exception = None):
+def after_recording_callback(sink: voice_recv.WaveSink, exception: Exception = None):  # <--- THE FIX
     """
     This function is called *after* the recording stops.
-    We now receive the interaction and sink via the lambda.
+    It runs in a separate thread, so we CANNOT use async Discord methods here.
     """
     if exception:
         print(f"Error during recording: {exception}")
         return
 
-    # --- THE v2.5 ONE-LINE FIX ---
-    # The attribute is .destination, not .filename!
-    filename = sink.destination
+    filename = sink.filename
     print(f"Recording finished: {filename}")
 
-    # We no longer need pending_chats, we have the interaction!
+    interaction = pending_chats.pop(filename, None)
     if not interaction:
-        print(f"Error: Interaction was None in callback")
+        print(f"Error: Could not find pending interaction for {filename}")
         return
 
     # Use client.loop (from our Client object) to schedule the async task
@@ -345,10 +336,7 @@ async def handle_audio_processing(interaction: discord.Interaction, filename: st
 
         if not transcript:
             await interaction.channel.send("I didn't hear anything, meat-bag. Try again.")
-            try:
-                os.remove(filename)
-            except OSError as e:
-                print(f"Error cleaning up {filename}: {e}")
+            os.remove(filename)
             return
 
         await interaction.channel.send(f"You said: \"{transcript}\"")
@@ -377,11 +365,8 @@ async def handle_audio_processing(interaction: discord.Interaction, filename: st
             await interaction.channel.send(f"An error occurred during processing: {e}")
     finally:
         if os.path.exists(filename):
-            try:
-                os.remove(filename)
-                print(f"Cleaned up {filename}")
-            except OSError as e:
-                print(f"Error cleaning up {filename}: {e}")
+            os.remove(filename)
+        print(f"Cleaned up {filename}")
 
 
 def transcribe_audio_file(filename: str) -> str:
@@ -469,11 +454,8 @@ def after_speech_cleanup(error, filename):
     if error:
         print(f'Error after playing: {error}')
     if os.path.exists(filename):
-        try:
-            os.remove(filename)
-            print(f"Cleaned up TTS file: {filename}")
-        except OSError as e:
-            print(f"Error cleaning up TTS file {filename}: {e}")
+        os.remove(filename)
+        print(f"Cleaned up TTS file: {filename}")
 
 
 # --- 10. Helper Function ---
