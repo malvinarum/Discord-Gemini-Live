@@ -69,9 +69,10 @@ intents.members = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
-# --- 4.5. Global State ---
-pending_chats = {}
 
+# --- 4.5. Global State ---
+# We no longer need this, we will pass the interaction via the lambda
+# pending_chats = {}
 
 # --- 5. Bot Events ---
 
@@ -86,7 +87,7 @@ async def on_ready():
     except Exception as e:
         print(f"Error syncing command tree: {e}")
 
-    print(f'Sprint 1 Bot (v2.3 - Timeout FIX) is online. Logged in as {client.user}')
+    print(f'Sprint 1 Bot (v2.4 - Lambda FIX) is online. Logged in as {client.user}')
     await client.change_presence(activity=discord.Game(name="Waiting for commands..."))
 
 
@@ -245,7 +246,6 @@ async def chat(interaction: discord.Interaction):
     if voice_client.is_playing():
         voice_client.stop()
 
-    # --- THE FIX IS HERE ---
     # This will now work because voice_client is a VoiceRecvClient
     voice_client.stop_listening()
 
@@ -264,38 +264,40 @@ async def chat(interaction: discord.Interaction):
         return
 
     filename = f"rec_{interaction.id}_{int(time.time())}.wav"
-    pending_chats[filename] = interaction  # Store the interaction
 
     print(f"Starting recording for {filename}")
 
-    # --- THE FIX IS HERE ---
-    # We use voice_recv.WaveSink, and we REMOVE the timeout argument
+    # --- THE v2.4 LAMBDA FIX ---
+    # 1. Create the sink instance first
+    sink = voice_recv.WaveSink(filename)
+
+    # 2. Pass a lambda to 'after' that includes the interaction and the sink
     voice_client.listen(
-        voice_recv.WaveSink(filename),  # <--- THE FIX
-        after=after_recording_callback
-        # timeout=10.0 # <--- THIS WAS THE BUG
+        sink,
+        after=lambda e: after_recording_callback(interaction, sink, e)
     )
 
-    # --- THE NEW FIX ---
-    # Manually start a 10-second timer to stop the recording
+    # 3. Manually start a 10-second timer to stop the recording
     client.loop.create_task(stop_listening_after(voice_client, 10.0))
 
 
-def after_recording_callback(sink: voice_recv.WaveSink, exception: Exception = None):  # <--- THE FIX
+def after_recording_callback(interaction: discord.Interaction, sink: voice_recv.WaveSink, exception: Exception = None):
     """
     This function is called *after* the recording stops.
-    It runs in a separate thread, so we CANNOT use async Discord methods here.
+    We now receive the interaction and sink via the lambda.
     """
     if exception:
         print(f"Error during recording: {exception}")
         return
 
+    # --- THE v2.4 FIX ---
+    # The sink is now passed correctly, so sink.filename will work.
     filename = sink.filename
     print(f"Recording finished: {filename}")
 
-    interaction = pending_chats.pop(filename, None)
+    # We no longer need pending_chats, we have the interaction!
     if not interaction:
-        print(f"Error: Could not find pending interaction for {filename}")
+        print(f"Error: Interaction was None in callback")
         return
 
     # Use client.loop (from our Client object) to schedule the async task
