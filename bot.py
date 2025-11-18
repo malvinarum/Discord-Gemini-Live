@@ -30,7 +30,7 @@ try:
         "temperature": 1.2,
         "top_p": 0.95,
         "top_k": 64,
-        "max_output_tokens": 256,
+        "max_output_tokens": 512,
         "response_mime_type": "text/plain",
     }
 
