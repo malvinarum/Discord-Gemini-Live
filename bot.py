@@ -2,8 +2,9 @@ import os
 import discord
 from discord import app_commands
 import google.genai as genai
-from google.genai import types as genai_types, \
-    configure  # <--- CRITICAL FIX: Importing 'configure' directly from the new package
+from google.genai import types as genai_types  # Import types from the module alias
+from google.genai.client import GenerativeModel, \
+    configure  # <--- CRITICAL FIX: Explicitly import GenerativeModel and configure
 from dotenv import load_dotenv
 from google.cloud import texttospeech
 from google.cloud import speech
@@ -80,10 +81,11 @@ try:
     system_instruction = BOT_PERSONALITY + voice_guidance
 
     # --- PRIMARY ATTEMPT: Highest Model ---
-    model_name_primary = "gemini-2.5-pro"
+    model_name_primary = "gemini-3-pro-preview"
 
     try:
-        gemini_model = genai.GenerativeModel(
+        # Use the explicitly imported GenerativeModel class
+        gemini_model = GenerativeModel(
             model_name=model_name_primary,
             generation_config=generation_config,
             system_instruction=system_instruction,
@@ -97,7 +99,8 @@ try:
         print(
             f"Warning: Model '{model_name_primary}' failed to load (404/not found). Falling back to '{model_name_fallback}'. Error: {e}")
 
-        gemini_model = genai.GenerativeModel(
+        # Use the explicitly imported GenerativeModel class
+        gemini_model = GenerativeModel(
             model_name=model_name_fallback,
             generation_config=generation_config,
             system_instruction=system_instruction,
