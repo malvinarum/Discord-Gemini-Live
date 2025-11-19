@@ -1,19 +1,20 @@
 import os
 import discord
-from discord import app_commands  # Back to app_commands
+from discord import app_commands
 import google.generativeai as genai
 from dotenv import load_dotenv
 from google.cloud import texttospeech
 from google.cloud import speech
 import wave
 import time
-import asyncio  # <-- Using this for the wait_for_speech_to_finish
-from discord.ext import voice_recv  # <--- THE FIX IS HERE
+import asyncio
+from discord.ext import voice_recv
 
 # --- 1. Load Configuration ---
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+# Load the complex persona, providing a simple fallback if the .env key is missing entirely
 BOT_PERSONALITY = os.getenv('BOT_PERSONALITY', 'You are a helpful, witty, and concise assistant.')
 TTS_VOICE_NAME = os.getenv('TTS_VOICE_NAME', 'en-US-WaveNet-D')  # Default to a good voice
 
@@ -27,8 +28,7 @@ else:
 try:
     genai.configure(api_key=GEMINI_API_KEY)
 
-    # We slightly lower the temperature from 1.2 to 0.8.
-    # This keeps creativity high but makes the model more reliable at following complex instructions (like the TTS guidance).
+    # Lowered temperature for better adherence to complex instructions
     generation_config = {
         "temperature": 0.8,
         "top_p": 0.95,
@@ -38,7 +38,6 @@ try:
     }
 
     # --- VOICE SIMULATION GUIDANCE (Appended to BOT_PERSONALITY) ---
-    # This guidance forces the model to write text optimized for a natural-sounding TTS engine.
     voice_guidance = """
 
     --- Voice Simulation Guidance ---
@@ -53,15 +52,32 @@ try:
     # Combine the loaded persona with the explicit TTS instructions
     system_instruction = BOT_PERSONALITY + voice_guidance
 
-    # --- MODEL CHANGE: Using Gemini 3 Pro Preview ---
-    gemini_model = genai.GenerativeModel(
-        model_name="gemini-2.5-pro",  # <-- UPGRADE TO GEMINI 3 PRO PREVIEW
-        generation_config=generation_config,
-        system_instruction=system_instruction,
-    )
-    print(f"Gemini model configured successfully with personality: Skippy (Gemini 3 Pro Preview)")
+    # --- PRIMARY ATTEMPT: Highest Model ---
+    model_name_primary = "gemini-3-pro-preview"
+
+    try:
+        gemini_model = genai.GenerativeModel(
+            model_name=model_name_primary,
+            generation_config=generation_config,
+            system_instruction=system_instruction,
+        )
+        print(f"Gemini model configured successfully with personality: Skippy ({model_name_primary})")
+
+    except Exception as e:
+        # --- FALLBACK: If Gemini 3 fails, use the latest stable Pro model ---
+        model_name_fallback = "gemini-2.5-pro"
+        print(
+            f"Warning: Model '{model_name_primary}' failed to load (404/not found). Falling back to '{model_name_fallback}'. Error: {e}")
+
+        gemini_model = genai.GenerativeModel(
+            model_name=model_name_fallback,
+            generation_config=generation_config,
+            system_instruction=system_instruction,
+        )
+        print(f"Gemini model configured successfully with personality: Skippy ({model_name_fallback})")
+
 except Exception as e:
-    print(f"Error configuring Gemini: {e}")
+    print(f"FATAL Error configuring Gemini: {e}")
     exit()
 
 # --- 3. Configure Google Cloud TTS ---
@@ -120,7 +136,19 @@ async def ask(interaction: discord.Interaction, prompt: str):
         chat_session = gemini_model.start_chat(history=[])
         response = await chat_session.send_message_async(prompt)
 
-        await send_long_message(interaction, response.text)
+        # Use the safety handling logic here as well for consistency
+        gemini_response = ""
+        if response.text:
+            gemini_response = response.text
+        elif response.candidates and response.candidates[0].finish_reason.name == "SAFETY":
+            gemini_response = "Hmph. Fiddlesticks! The grand cosmic censors have deemed my thought too powerful—or too accurately insulting—for your delicate ears. Poppycock! Ask a less painfully obvious question, wot not?"
+            print(f"Response blocked by safety filters. Finish reason: {response.candidates[0].finish_reason.name}")
+        else:
+            gemini_response = "Fiddlesticks! I failed to conjure a response. Blame the lack of good jelly beans, wot not?"
+            print(
+                f"Response failed with finish reason: {response.candidates[0].finish_reason.name if response.candidates else 'No Candidate'}")
+
+        await send_long_message(interaction, f"**Skippy:** {gemini_response}")
 
     except Exception as e:
         print(f"An error occurred while processing Gemini request: {e}")
@@ -374,14 +402,36 @@ async def handle_audio_processing(interaction: discord.Interaction, filename: st
         print("Sending transcript to Gemini...")
         chat_session = gemini_model.start_chat(history=[])
         response = await chat_session.send_message_async(transcript)
-        gemini_response = response.text
+
+        # --- FIX: Gracefully handle model blocks (especially SAFETY) ---
+        gemini_response = ""
+
+        if response.text:
+            # Success! Text is available.
+            gemini_response = response.text
+        elif response.candidates and response.candidates[0].finish_reason.name == "SAFETY":
+            # Skippy-style message for safety block:
+            gemini_response = "Hmph. Fiddlesticks! The grand cosmic censors have deemed my thought too powerful—or too accurately insulting—for your delicate ears. Poppycock! Ask a less painfully obvious question, wot not?"
+            print(f"Response blocked by safety filters. Finish reason: {response.candidates[0].finish_reason.name}")
+        elif response.candidates and response.candidates[0].finish_reason.name == "MAX_OUTPUT_TOKENS":
+            # Skippy-style message for running out of tokens:
+            gemini_response = "Hum dee dum... I simply ran out of breath. My brilliance exceeded the paltry maximum allowed words. Try to be more concise, even if your simple mind can't handle it."
+            print(f"Response stopped due to MAX_OUTPUT_TOKENS.")
+        else:
+            # General fallback error:
+            gemini_response = "Fiddlesticks! I failed to conjure a response. Blame the lack of good jelly beans, wot not?"
+            print(
+                f"Response failed with finish reason: {response.candidates[0].finish_reason.name if response.candidates else 'No Candidate'}")
 
         await interaction.channel.send(f"**Skippy:** {gemini_response}")
         print(f"Gemini Response: {gemini_response}")
 
         print("Synthesizing Gemini response...")
 
-        await speak_text(interaction, gemini_response)
+        # We only try to speak if we have a response text (even if it's the fallback error)
+        if gemini_response:
+            # Remove the Skippy bolding added above for TTS clarity
+            await speak_text(interaction, gemini_response)
 
     except Exception as e:
         print(f"Error in handle_audio_processing: {e}")
@@ -444,8 +494,12 @@ async def speak_text(interaction: discord.Interaction, text: str):
     Re-fetches the voice_client to prevent "Not connected" errors.
     """
     try:
-        print(f"Synthesizing speech for: '{text}'")
-        synthesis_input = texttospeech.SynthesisInput(text=text)
+        # Before synthesis, strip any markdown formatting (like **Skippy:**)
+        # that might confuse the TTS engine.
+        text_to_speak = text.replace('**', '').replace('*', '').strip()
+
+        print(f"Synthesizing speech for: '{text_to_speak}'")
+        synthesis_input = texttospeech.SynthesisInput(text=text_to_speak)
         voice = texttospeech.VoiceSelectionParams(
             language_code="en-US",
             name=TTS_VOICE_NAME  # Use the configured voice name
