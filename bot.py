@@ -20,8 +20,8 @@ BOT_PERSONALITY = os.getenv('BOT_PERSONALITY', 'You are a helpful, witty, and co
 TTS_VOICE_NAME = os.getenv('TTS_VOICE_NAME', 'en-US-WaveNet-D')
 
 # --- MODEL CONFIGURATION ---
-# Switching to Flash for speed and stability as requested
-GEMINI_MODEL_NAME = "gemini-2.5-flash"
+# Switching to Pro for better stability and reasoning
+GEMINI_MODEL_NAME = "gemini-2.5-pro"
 
 GOOGLE_SERVICE_JSON = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
 if GOOGLE_SERVICE_JSON and os.path.exists(GOOGLE_SERVICE_JSON):
@@ -109,20 +109,35 @@ tree = app_commands.CommandTree(client)
 async def generate_skippy_response(prompt_text: str):
     """
     Wraps the synchronous Gemini Client call in an executor.
+    Adds robust retry logic for 503 Overloaded errors.
     """
 
     def _call_gemini():
-        try:
-            # Simplified logic: Just call the requested model directly
-            response = client_genai.models.generate_content(
-                model=GEMINI_MODEL_NAME,
-                contents=prompt_text,
-                config=generation_config
-            )
-            return response
-        except Exception as inner_e:
-            print(f"Gemini generation failed: {inner_e}")
-            return None
+        max_retries = 3
+        base_delay = 1  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                # Attempt to call the model
+                response = client_genai.models.generate_content(
+                    model=GEMINI_MODEL_NAME,
+                    contents=prompt_text,
+                    config=generation_config
+                )
+                return response
+            except Exception as inner_e:
+                error_str = str(inner_e)
+                # Check for 503 or 429 (Too Many Requests)
+                if "503" in error_str or "429" in error_str or "overloaded" in error_str.lower():
+                    if attempt < max_retries - 1:
+                        sleep_time = base_delay * (2 ** attempt)  # Exponential backoff: 1s, 2s...
+                        print(f"Gemini overloaded (Attempt {attempt + 1}/{max_retries}). Retrying in {sleep_time}s...")
+                        time.sleep(sleep_time)
+                        continue  # Try again
+
+                # If it's not a transient error, or we're out of retries, fail.
+                print(f"Gemini generation failed: {inner_e}")
+                return None
 
     return await client.loop.run_in_executor(None, _call_gemini)
 
@@ -137,7 +152,7 @@ async def on_ready():
     except Exception as e:
         print(f"Error syncing command tree: {e}")
 
-    print(f'Skippy (Flash Edition) is online. Logged in as {client.user}')
+    print(f'Skippy (Pro Edition) is online. Logged in as {client.user}')
     await client.change_presence(activity=discord.Game(name="Judging your life choices..."))
 
 
@@ -158,7 +173,7 @@ async def ask(interaction: discord.Interaction, prompt: str):
             gemini_response = response.text
         else:
             # Handling Safety/Block/Error
-            gemini_response = "Hmph. The cosmic censors blocked me. Ask something less foolish, wot not?"
+            gemini_response = "Hmph. The cosmic censors (or a server hiccup) silenced my brilliance."
             if response and response.candidates:
                 print(f"Blocked. Finish reason: {response.candidates[0].finish_reason}")
 
