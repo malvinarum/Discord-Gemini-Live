@@ -1,8 +1,8 @@
 import os
 import discord
 from discord import app_commands
-from google import genai  # <--- NEW SDK IMPORT PATTERN
-from google.genai import types  # <--- NEW TYPES IMPORT
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 from google.cloud import texttospeech
 from google.cloud import speech
@@ -16,9 +16,12 @@ from discord.ext import voice_recv
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-# Load the complex persona
 BOT_PERSONALITY = os.getenv('BOT_PERSONALITY', 'You are a helpful, witty, and concise assistant.')
 TTS_VOICE_NAME = os.getenv('TTS_VOICE_NAME', 'en-US-WaveNet-D')
+
+# --- MODEL CONFIGURATION ---
+# Switching to Flash for speed and stability as requested
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
 
 GOOGLE_SERVICE_JSON = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
 if GOOGLE_SERVICE_JSON and os.path.exists(GOOGLE_SERVICE_JSON):
@@ -28,7 +31,7 @@ else:
 
 # --- 2. Configure Gemini (New SDK Pattern) ---
 try:
-    # Initialize the Client (No more global configure)
+    # Initialize the Client
     client_genai = genai.Client(api_key=GEMINI_API_KEY)
 
     # --- VOICE SIMULATION GUIDANCE ---
@@ -44,7 +47,7 @@ try:
 
     system_instruction = BOT_PERSONALITY + voice_guidance
 
-    # Define the config object once
+    # Define the config object
     generation_config = types.GenerateContentConfig(
         temperature=0.8,
         top_p=0.95,
@@ -72,12 +75,7 @@ try:
         ]
     )
 
-    # Set the model name
-    # We will try to use this model name in the client calls
-    GEMINI_MODEL_NAME = "gemini-2.5-pro"  # Fallback to a known working model if 3-preview fails
-    # Note: For the new SDK, we pass the model name during the generate call, not init.
-
-    print(f"Gemini Client initialized. Target Model: {GEMINI_MODEL_NAME} (or compatible)")
+    print(f"Gemini Client initialized. Target Model: {GEMINI_MODEL_NAME}")
 
 except Exception as e:
     print(f"FATAL Error configuring Gemini Client: {e}")
@@ -110,29 +108,18 @@ tree = app_commands.CommandTree(client)
 # --- HELPER: Run Sync Gemini Calls in Thread ---
 async def generate_skippy_response(prompt_text: str):
     """
-    Wraps the synchronous Gemini Client call in an executor to prevent
-    blocking the Discord bot loop.
+    Wraps the synchronous Gemini Client call in an executor.
     """
 
     def _call_gemini():
         try:
-            # Try Gemini 3 Preview first
-            try:
-                response = client_genai.models.generate_content(
-                    model="gemini-3-pro-preview",
-                    contents=prompt_text,
-                    config=generation_config
-                )
-                return response
-            except Exception:
-                # Fallback to 2.0 Flash or Pro if 3 is not available
-                print("Gemini 3 preview failed/not found, falling back...")
-                response = client_genai.models.generate_content(
-                    model="gemini-2.0-flash-exp",  # Or gemini-1.5-pro
-                    contents=prompt_text,
-                    config=generation_config
-                )
-                return response
+            # Simplified logic: Just call the requested model directly
+            response = client_genai.models.generate_content(
+                model=GEMINI_MODEL_NAME,
+                contents=prompt_text,
+                config=generation_config
+            )
+            return response
         except Exception as inner_e:
             print(f"Gemini generation failed: {inner_e}")
             return None
@@ -150,7 +137,7 @@ async def on_ready():
     except Exception as e:
         print(f"Error syncing command tree: {e}")
 
-    print(f'Skippy (New SDK Edition) is online. Logged in as {client.user}')
+    print(f'Skippy (Flash Edition) is online. Logged in as {client.user}')
     await client.change_presence(activity=discord.Game(name="Judging your life choices..."))
 
 
