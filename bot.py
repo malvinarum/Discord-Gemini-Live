@@ -24,7 +24,7 @@ TTS_VOICE_NAME = os.getenv('TTS_VOICE_NAME', 'en-GB-Neural2-D')
 
 # --- MODEL CONFIGURATION ---
 # We use Flash because it handles Audio Input very quickly and cheaply
-GEMINI_MODEL_NAME = "gemini-3-pro"
+GEMINI_MODEL_NAME = "gemini-2.5-flash-lite"
 
 GOOGLE_SERVICE_JSON = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
 if GOOGLE_SERVICE_JSON and os.path.exists(GOOGLE_SERVICE_JSON):
