@@ -41,25 +41,25 @@ try:
     # --- SAFETY SETTINGS: Loosen restrictions for Skippy's persona ---
     # We lower the block threshold for Harassment and Hate Speech to allow Skippy's insults
     safety_settings = [
-        types.SafetySetting(
-            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+        genai.types.SafetySetting(  # FIXED: Using genai.types for reliability
+            category=genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT,
             # Block content only if it is marked as HIGH probability of harm
-            threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH
+            threshold=genai.types.HarmBlockThreshold.BLOCK_ONLY_HIGH
         ),
-        types.SafetySetting(
-            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+        genai.types.SafetySetting(  # FIXED
+            category=genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
             # Block content only if it is marked as HIGH probability of harm
-            threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH
+            threshold=genai.types.HarmBlockThreshold.BLOCK_ONLY_HIGH
         ),
-        types.SafetySetting(
-            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+        genai.types.SafetySetting(  # FIXED
+            category=genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
             # Maintain default setting for this category (blocks Medium and above)
-            threshold=types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
+            threshold=genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
         ),
-        types.SafetySetting(
-            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+        genai.types.SafetySetting(  # FIXED
+            category=genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
             # Maintain default setting for this category (blocks Medium and above)
-            threshold=types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
+            threshold=genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
         ),
     ]
 
