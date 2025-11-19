@@ -53,7 +53,7 @@ try:
     system_instruction = BOT_PERSONALITY + voice_guidance
 
     # --- PRIMARY ATTEMPT: Highest Model ---
-    model_name_primary = "gemini-3-pro-preview"
+    model_name_primary = "gemini-2.5-pro"
 
     try:
         gemini_model = genai.GenerativeModel(
