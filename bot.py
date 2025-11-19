@@ -1,8 +1,7 @@
 import os
 import discord
 from discord import app_commands
-import google.generativeai as genai
-# Removed: from google.generativeai import types (Rely on genai.types)
+import google.genai as genai  # <--- CRITICAL FIX: Switched to the new package name
 from dotenv import load_dotenv
 from google.cloud import texttospeech
 from google.cloud import speech
@@ -38,8 +37,8 @@ try:
         "response_mime_type": "text/plain",
     }
 
-    # --- SAFETY SETTINGS: Loosen restrictions for Skippy's persona ---
-    # We lower the block threshold for Harassment and Hate Speech to allow Skippy's insults
+    # --- SAFETY SETTINGS: Re-enabled to allow Skippy's sarcasm ---
+    # The new SDK supports this. We lower the block threshold for Harassment and Hate Speech.
     safety_settings = [
         genai.types.SafetySetting(
             category=genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT,
@@ -86,7 +85,7 @@ try:
             model_name=model_name_primary,
             generation_config=generation_config,
             system_instruction=system_instruction,
-            safety_settings=safety_settings  # <-- PASSED SAFETY SETTINGS
+            safety_settings=safety_settings  # <-- RE-ENABLED
         )
         print(f"Gemini model configured successfully with personality: Skippy ({model_name_primary})")
 
@@ -100,7 +99,7 @@ try:
             model_name=model_name_fallback,
             generation_config=generation_config,
             system_instruction=system_instruction,
-            safety_settings=safety_settings  # <-- PASSED SAFETY SETTINGS
+            safety_settings=safety_settings  # <-- RE-ENABLED
         )
         print(f"Gemini model configured successfully with personality: Skippy ({model_name_fallback})")
 
