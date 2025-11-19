@@ -5,7 +5,7 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from google.cloud import texttospeech
-from google.cloud import speech
+# Removed: from google.cloud import speech (We don't need STT anymore!)
 import wave
 import time
 import asyncio
@@ -20,8 +20,8 @@ BOT_PERSONALITY = os.getenv('BOT_PERSONALITY', 'You are a helpful, witty, and co
 TTS_VOICE_NAME = os.getenv('TTS_VOICE_NAME', 'en-US-WaveNet-D')
 
 # --- MODEL CONFIGURATION ---
-# Switching to Pro for better stability and reasoning
-GEMINI_MODEL_NAME = "gemini-2.5-pro"
+# We use Flash because it handles Audio Input very quickly and cheaply
+GEMINI_MODEL_NAME = "gemini-2.5-flash"
 
 GOOGLE_SERVICE_JSON = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
 if GOOGLE_SERVICE_JSON and os.path.exists(GOOGLE_SERVICE_JSON):
@@ -31,7 +31,6 @@ else:
 
 # --- 2. Configure Gemini (New SDK Pattern) ---
 try:
-    # Initialize the Client
     client_genai = genai.Client(api_key=GEMINI_API_KEY)
 
     # --- VOICE SIMULATION GUIDANCE ---
@@ -47,7 +46,6 @@ try:
 
     system_instruction = BOT_PERSONALITY + voice_guidance
 
-    # Define the config object
     generation_config = types.GenerateContentConfig(
         temperature=0.8,
         top_p=0.95,
@@ -88,13 +86,6 @@ try:
 except Exception as e:
     print(f"Error configuring Google Cloud TTS: {e}")
 
-# --- 3.5. Configure Google Cloud STT ---
-try:
-    stt_client = speech.SpeechClient()
-    print("Google Cloud STT client configured successfully.")
-except Exception as e:
-    print(f"Error configuring Google Cloud STT: {e}")
-
 # --- 4. Configure Discord Bot ---
 intents = discord.Intents.default()
 intents.message_content = True
@@ -106,36 +97,32 @@ tree = app_commands.CommandTree(client)
 
 
 # --- HELPER: Run Sync Gemini Calls in Thread ---
-async def generate_skippy_response(prompt_text: str):
+async def generate_skippy_response(prompt_input):
     """
-    Wraps the synchronous Gemini Client call in an executor.
-    Adds robust retry logic for 503 Overloaded errors.
+    Wraps the synchronous Gemini Client call.
+    'prompt_input' can now be text OR an audio Part object.
     """
 
     def _call_gemini():
         max_retries = 3
-        base_delay = 1  # seconds
+        base_delay = 1
 
         for attempt in range(max_retries):
             try:
-                # Attempt to call the model
                 response = client_genai.models.generate_content(
                     model=GEMINI_MODEL_NAME,
-                    contents=prompt_text,
+                    contents=[prompt_input],  # Pass as a list
                     config=generation_config
                 )
                 return response
             except Exception as inner_e:
                 error_str = str(inner_e)
-                # Check for 503 or 429 (Too Many Requests)
                 if "503" in error_str or "429" in error_str or "overloaded" in error_str.lower():
                     if attempt < max_retries - 1:
-                        sleep_time = base_delay * (2 ** attempt)  # Exponential backoff: 1s, 2s...
-                        print(f"Gemini overloaded (Attempt {attempt + 1}/{max_retries}). Retrying in {sleep_time}s...")
+                        sleep_time = base_delay * (2 ** attempt)
+                        print(f"Gemini overloaded (Attempt {attempt + 1}/{max_retries}). Retrying...")
                         time.sleep(sleep_time)
-                        continue  # Try again
-
-                # If it's not a transient error, or we're out of retries, fail.
+                        continue
                 print(f"Gemini generation failed: {inner_e}")
                 return None
 
@@ -152,8 +139,8 @@ async def on_ready():
     except Exception as e:
         print(f"Error syncing command tree: {e}")
 
-    print(f'Skippy (Pro Edition) is online. Logged in as {client.user}')
-    await client.change_presence(activity=discord.Game(name="Judging your life choices..."))
+    print(f'Skippy (Native Audio Edition) is online. Logged in as {client.user}')
+    await client.change_presence(activity=discord.Game(name="Listening to your nonsense..."))
 
 
 # --- 6. Slash Commands (Text) ---
@@ -164,52 +151,40 @@ async def ask(interaction: discord.Interaction, prompt: str):
 
     try:
         print(f"User '{interaction.user.name}' asked: {prompt}")
-
-        # Use our helper function
+        # For text, we just pass the string
         response = await generate_skippy_response(prompt)
 
         gemini_response = ""
         if response and response.text:
             gemini_response = response.text
         else:
-            # Handling Safety/Block/Error
-            gemini_response = "Hmph. The cosmic censors (or a server hiccup) silenced my brilliance."
-            if response and response.candidates:
-                print(f"Blocked. Finish reason: {response.candidates[0].finish_reason}")
+            gemini_response = "Hmph. The cosmic censors blocked me."
 
         await send_long_message(interaction, f"**Skippy:** {gemini_response}")
 
     except Exception as e:
-        print(f"An error occurred while processing Gemini request: {e}")
+        print(f"An error occurred: {e}")
         await interaction.followup.send(f"An error occurred: {e}", ephemeral=True)
 
 
-# --- 7. Slash Commands (Voice) ---
+# --- 7. Slash Commands (Voice Join/Leave/Say) ---
+# (These remain largely the same, ensuring we have voice_recv)
 
 @tree.command(name="join", description="Joins your current voice channel.")
 async def join(interaction: discord.Interaction):
     await interaction.response.defer()
-
     if not interaction.user.voice:
-        await interaction.followup.send("You're not in a voice channel, meat-bag.", ephemeral=True)
+        await interaction.followup.send("You're not in a voice channel.", ephemeral=True)
         return
-
     voice_channel = interaction.user.voice.channel
 
     if interaction.guild.voice_client:
-        if interaction.guild.voice_client.channel == voice_channel:
-            await interaction.followup.send("I'm already *in* your channel.", ephemeral=True)
-            return
-        try:
-            await interaction.guild.voice_client.move_to(voice_channel)
-            await interaction.followup.send(f"Fine, moving to `{voice_channel.name}`.")
-        except Exception as e:
-            await interaction.followup.send(f"Problem moving: {e}")
+        await interaction.followup.send("I'm already connected.")
         return
 
     try:
         await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
-        await interaction.followup.send(f"Okay, I'm in `{voice_channel.name}`.")
+        await interaction.followup.send(f"Connected to `{voice_channel.name}`.")
     except Exception as e:
         await interaction.followup.send(f"Error connecting: {e}", ephemeral=True)
 
@@ -218,26 +193,19 @@ async def join(interaction: discord.Interaction):
 async def leave(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     if not interaction.guild.voice_client:
-        await interaction.followup.send("I'm not in a voice channel.")
+        await interaction.followup.send("I'm not connected.")
         return
-    try:
-        await interaction.guild.voice_client.disconnect()
-        await interaction.followup.send("Leaving. Good riddance.")
-    except Exception as e:
-        await interaction.followup.send(f"Problem leaving: {e}")
+    await interaction.guild.voice_client.disconnect()
+    await interaction.followup.send("Disconnected.")
 
-
-# --- 8. Slash Command (TTS Test) ---
 
 @tree.command(name="say", description="Speaks the given text.")
 async def say(interaction: discord.Interaction, text: str):
     if not interaction.user.voice:
-        await interaction.response.send_message("Join a voice channel first.", ephemeral=True)
+        await interaction.response.send_message("Join a voice channel.", ephemeral=True)
         return
-
     await interaction.response.defer()
 
-    # Ensure connection logic is robust (copy from chat/join if needed)
     voice_client = interaction.guild.voice_client
     if not voice_client:
         try:
@@ -246,14 +214,11 @@ async def say(interaction: discord.Interaction, text: str):
             await interaction.followup.send(f"Failed to connect: {e}")
             return
 
-    try:
-        await speak_text(interaction, text)
-        await interaction.followup.send(f"I said: \"{text}\"")
-    except Exception as e:
-        await interaction.followup.send(f"Error speaking: {e}")
+    await speak_text(interaction, text)
+    await interaction.followup.send(f"Spoke: {text}")
 
 
-# --- 9. Slash Command (Core Loop) ---
+# --- 8. Slash Command (Chat - Native Audio) ---
 
 async def stop_listening_after(voice_client, delay: float):
     await asyncio.sleep(delay)
@@ -305,7 +270,6 @@ def after_recording_callback(interaction, filename, exception=None):
     if exception:
         print(f"Recording error: {exception}")
         return
-
     if not interaction: return
     client.loop.call_soon_threadsafe(process_audio_task, interaction, filename)
 
@@ -316,31 +280,34 @@ def process_audio_task(interaction, filename):
 
 async def handle_audio_processing(interaction, filename):
     try:
-        print(f"Processing STT for {filename}...")
-        stt_recognize = client.loop.run_in_executor(None, transcribe_audio_file, filename)
-        transcript = await stt_recognize
+        print(f"Processing Native Audio for {filename}...")
 
-        if not transcript:
-            await interaction.channel.send("I didn't hear anything. Speak up!")
-            return
+        # 1. Read the audio file bytes
+        with open(filename, "rb") as f:
+            audio_bytes = f.read()
 
-        await interaction.channel.send(f"You said: \"{transcript}\"")
+        # 2. Prepare the input Part for Gemini
+        # This replaces the STT text string. We send the raw audio.
+        prompt_part = types.Part.from_bytes(
+            data=audio_bytes,
+            mime_type="audio/wav"
+        )
 
-        # --- GENERATE RESPONSE USING NEW HELPER ---
-        print("Sending to Gemini...")
-        response = await generate_skippy_response(transcript)
+        # 3. Send to Gemini (Native Audio Input)
+        print("Sending AUDIO bytes directly to Gemini...")
+        response = await generate_skippy_response(prompt_part)
 
         gemini_response = ""
         if response and response.text:
             gemini_response = response.text
+            print(f"Skippy heard you and said: {gemini_response}")
         else:
-            gemini_response = "Hmph. The censors silenced my brilliance."
+            gemini_response = "Hmph. I heard noises, but the censors blocked my witty retort."
             if response and response.candidates:
                 print(f"Safety Block: {response.candidates[0].finish_reason}")
 
         await interaction.channel.send(f"**Skippy:** {gemini_response}")
 
-        # Clean text for TTS
         tts_text = gemini_response.replace('**', '').replace('*', '').strip()
         if tts_text:
             await speak_text(interaction, tts_text)
@@ -348,37 +315,13 @@ async def handle_audio_processing(interaction, filename):
     except Exception as e:
         print(f"Error in processing: {e}")
         if not interaction.response.is_done():
-            await interaction.followup.send("Something went wrong.")
+            await interaction.followup.send("Something went wrong processing the audio.")
     finally:
         if os.path.exists(filename):
             try:
                 os.remove(filename)
             except:
                 pass
-
-
-def transcribe_audio_file(filename: str) -> str:
-    try:
-        with open(filename, "rb") as audio_file:
-            content = audio_file.read()
-        with wave.open(filename, "rb") as wf:
-            sample_rate = wf.getframerate()
-            channels = wf.getnchannels()
-
-        audio = speech.RecognitionAudio(content=content)
-        config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=sample_rate,
-            language_code="en-US",
-            audio_channel_count=channels
-        )
-        response = stt_client.recognize(config=config, audio=audio)
-        if response.results:
-            return response.results[0].alternatives[0].transcript
-        return ""
-    except Exception as e:
-        print(f"STT Error: {e}")
-        return ""
 
 
 async def speak_text(interaction, text):
@@ -420,14 +363,12 @@ def after_speech_cleanup(error, filename):
 
 
 async def send_long_message(interaction, text):
-    # (Simplified for brevity, original logic was fine)
     if len(text) <= 2000:
         if not interaction.response.is_done():
             await interaction.followup.send(text)
         else:
             await interaction.channel.send(text)
     else:
-        # Basic chunking
         for i in range(0, len(text), 2000):
             await interaction.channel.send(text[i:i + 2000])
 
