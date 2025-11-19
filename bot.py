@@ -23,25 +23,43 @@ if GOOGLE_SERVICE_JSON and os.path.exists(GOOGLE_SERVICE_JSON):
 else:
     print("Warning: GOOGLE_APPLICATION_CREDENTIALS not set or file not found. TTS/STT will fail.")
 
-# --- 2. Configure Gemini ---
+# --- 2. Configure Gemini (Updated for Gemini 3 and TTS) ---
 try:
     genai.configure(api_key=GEMINI_API_KEY)
+
+    # We slightly lower the temperature from 1.2 to 0.8.
+    # This keeps creativity high but makes the model more reliable at following complex instructions (like the TTS guidance).
     generation_config = {
-        "temperature": 1.2,
+        "temperature": 0.8,
         "top_p": 0.95,
         "top_k": 64,
         "max_output_tokens": 512,
         "response_mime_type": "text/plain",
     }
 
-    system_instruction = BOT_PERSONALITY
+    # --- VOICE SIMULATION GUIDANCE (Appended to BOT_PERSONALITY) ---
+    # This guidance forces the model to write text optimized for a natural-sounding TTS engine.
+    voice_guidance = """
 
+    --- Voice Simulation Guidance ---
+    Your final responses must be written for a Text-to-Speech (TTS) engine, simulating a live, human conversation.
+    1. CONVERSATIONAL FLOW: Use a **casual, informal, and interruptible** speaking style.
+    2. PACING: **Keep sentences concise.** Use short sentences and natural transitions (e.g., "Well,", "Look,", "Wait,").
+    3. INFLECTION & PAUSING: Use proper and varied **punctuation** to guide the TTS engine's pacing and inflection. This includes: Ellipses (...), Em dashes (—), Commas (,), Exclamations (!).
+    4. AVOID LISTS: Never use bullet points or numbered lists.
+    5. FORMATTING: Do not use Markdown formatting like bolding or italics. Use only plain text.
+    """
+
+    # Combine the loaded persona with the explicit TTS instructions
+    system_instruction = BOT_PERSONALITY + voice_guidance
+
+    # --- MODEL CHANGE: Using Gemini 3 Pro Preview ---
     gemini_model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+        model_name="gemini-3-flash-preview",  # <-- UPGRADE TO GEMINI 3 PRO PREVIEW
         generation_config=generation_config,
         system_instruction=system_instruction,
     )
-    print(f"Gemini model configured successfully with personality: {BOT_PERSONALITY}")
+    print(f"Gemini model configured successfully with personality: Skippy (Gemini 3 Pro Preview)")
 except Exception as e:
     print(f"Error configuring Gemini: {e}")
     exit()
