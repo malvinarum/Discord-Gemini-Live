@@ -1,14 +1,18 @@
-# Python libraries required for the project
-# This is the v2.1 pivot! Stable + GitHub Sinks.
+#Python libraries required for the project
 
-# The stable "mouth"
+#This is the v2.1 pivot! Stable + GitHub Sinks.
+
+#The stable "mouth"
+
 discord.py[voice]>=2.3.0
 
-# The dev "ears", installed from GitHub
+#The dev "ears", installed from GitHub
+
 discord-ext-voice-recv @ git+https://github.com/imayhaveborkedit/discord-ext-voice-recv.git
 
-# The rest of our libraries
-google-generativeai>=0.5.0
+#The rest of our libraries
+
+google-generativeai>=0.16.0  # <--- CRITICAL CHANGE: Forcing a modern SDK version that supports SafetySettings
 python-dotenv>=1.0.0
 PyNaCl>=1.5.0
 google-cloud-texttospeech>=2.14.0
