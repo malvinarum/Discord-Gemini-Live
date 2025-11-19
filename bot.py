@@ -17,7 +17,10 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 BOT_PERSONALITY = os.getenv('BOT_PERSONALITY', 'You are a helpful, witty, and concise assistant.')
-TTS_VOICE_NAME = os.getenv('TTS_VOICE_NAME', 'en-US-WaveNet-D')
+
+# --- VOICE CONFIGURATION UPDATE ---
+# Switched to 'en-GB-Neural2-D': A deep, British male voice (Neural2 is more human-like than WaveNet)
+TTS_VOICE_NAME = os.getenv('TTS_VOICE_NAME', 'en-GB-Neural2-D')
 
 # --- MODEL CONFIGURATION ---
 # We use Flash because it handles Audio Input very quickly and cheaply
@@ -327,8 +330,19 @@ async def handle_audio_processing(interaction, filename):
 async def speak_text(interaction, text):
     try:
         synthesis_input = texttospeech.SynthesisInput(text=text)
-        voice = texttospeech.VoiceSelectionParams(language_code="en-US", name=TTS_VOICE_NAME)
-        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3)
+
+        # Use the NEW voice name
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="en-GB",  # British for "Poppycock!"
+            name=TTS_VOICE_NAME  # en-GB-Neural2-D
+        )
+
+        # Tweak the audio to sound more "tired wizard"
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+            speaking_rate=0.85,  # Slower (Exhausted)
+            pitch=-4.0  # Deeper (Ancient)
+        )
 
         response = await client.loop.run_in_executor(
             None,
