@@ -74,7 +74,7 @@ try:
 
     # Set the model name
     # We will try to use this model name in the client calls
-    GEMINI_MODEL_NAME = "gemini-2.0-flash-exp"  # Fallback to a known working model if 3-preview fails
+    GEMINI_MODEL_NAME = "gemini-2.5-pro"  # Fallback to a known working model if 3-preview fails
     # Note: For the new SDK, we pass the model name during the generate call, not init.
 
     print(f"Gemini Client initialized. Target Model: {GEMINI_MODEL_NAME} (or compatible)")
