@@ -55,7 +55,7 @@ try:
 
     # --- MODEL CHANGE: Using Gemini 3 Pro Preview ---
     gemini_model = genai.GenerativeModel(
-        model_name="gemini-3-pro-preview",  # <-- UPGRADE TO GEMINI 3 PRO PREVIEW
+        model_name="gemini-2.5-pro",  # <-- UPGRADE TO GEMINI 3 PRO PREVIEW
         generation_config=generation_config,
         system_instruction=system_instruction,
     )
