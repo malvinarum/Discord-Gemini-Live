@@ -2,7 +2,7 @@ import os
 import discord
 from discord import app_commands
 import google.generativeai as genai
-from google.generativeai import types  # <-- ADDED FOR SAFETY SETTINGS
+# Removed: from google.generativeai import types (Rely on genai.types)
 from dotenv import load_dotenv
 from google.cloud import texttospeech
 from google.cloud import speech
@@ -41,22 +41,22 @@ try:
     # --- SAFETY SETTINGS: Loosen restrictions for Skippy's persona ---
     # We lower the block threshold for Harassment and Hate Speech to allow Skippy's insults
     safety_settings = [
-        genai.types.SafetySetting(  # FIXED: Using genai.types for reliability
+        genai.types.SafetySetting(
             category=genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT,
             # Block content only if it is marked as HIGH probability of harm
             threshold=genai.types.HarmBlockThreshold.BLOCK_ONLY_HIGH
         ),
-        genai.types.SafetySetting(  # FIXED
+        genai.types.SafetySetting(
             category=genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
             # Block content only if it is marked as HIGH probability of harm
             threshold=genai.types.HarmBlockThreshold.BLOCK_ONLY_HIGH
         ),
-        genai.types.SafetySetting(  # FIXED
+        genai.types.SafetySetting(
             category=genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
             # Maintain default setting for this category (blocks Medium and above)
             threshold=genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
         ),
-        genai.types.SafetySetting(  # FIXED
+        genai.types.SafetySetting(
             category=genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
             # Maintain default setting for this category (blocks Medium and above)
             threshold=genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
