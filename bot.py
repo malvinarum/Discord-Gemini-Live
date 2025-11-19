@@ -2,6 +2,7 @@ import os
 import discord
 from discord import app_commands
 import google.generativeai as genai
+from google.generativeai import types  # <-- ADDED FOR SAFETY SETTINGS
 from dotenv import load_dotenv
 from google.cloud import texttospeech
 from google.cloud import speech
@@ -24,7 +25,7 @@ if GOOGLE_SERVICE_JSON and os.path.exists(GOOGLE_SERVICE_JSON):
 else:
     print("Warning: GOOGLE_APPLICATION_CREDENTIALS not set or file not found. TTS/STT will fail.")
 
-# --- 2. Configure Gemini (Updated for Gemini 3 and TTS) ---
+# --- 2. Configure Gemini (Updated for Gemini 3, TTS, and Safety) ---
 try:
     genai.configure(api_key=GEMINI_API_KEY)
 
@@ -36,6 +37,31 @@ try:
         "max_output_tokens": 512,
         "response_mime_type": "text/plain",
     }
+
+    # --- SAFETY SETTINGS: Loosen restrictions for Skippy's persona ---
+    # We lower the block threshold for Harassment and Hate Speech to allow Skippy's insults
+    safety_settings = [
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+            # Block content only if it is marked as HIGH probability of harm
+            threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH
+        ),
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+            # Block content only if it is marked as HIGH probability of harm
+            threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH
+        ),
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+            # Maintain default setting for this category (blocks Medium and above)
+            threshold=types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
+        ),
+        types.SafetySetting(
+            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+            # Maintain default setting for this category (blocks Medium and above)
+            threshold=types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
+        ),
+    ]
 
     # --- VOICE SIMULATION GUIDANCE (Appended to BOT_PERSONALITY) ---
     voice_guidance = """
@@ -60,6 +86,7 @@ try:
             model_name=model_name_primary,
             generation_config=generation_config,
             system_instruction=system_instruction,
+            safety_settings=safety_settings  # <-- PASSED SAFETY SETTINGS
         )
         print(f"Gemini model configured successfully with personality: Skippy ({model_name_primary})")
 
@@ -73,6 +100,7 @@ try:
             model_name=model_name_fallback,
             generation_config=generation_config,
             system_instruction=system_instruction,
+            safety_settings=safety_settings  # <-- PASSED SAFETY SETTINGS
         )
         print(f"Gemini model configured successfully with personality: Skippy ({model_name_fallback})")
 
