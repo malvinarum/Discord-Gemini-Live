@@ -1,7 +1,9 @@
 import os
 import discord
 from discord import app_commands
-import google.genai as genai  # <--- CRITICAL FIX: Switched to the new package name
+import google.genai as genai
+from google.genai import types as genai_types, \
+    configure  # <--- CRITICAL FIX: Importing 'configure' directly from the new package
 from dotenv import load_dotenv
 from google.cloud import texttospeech
 from google.cloud import speech
@@ -26,7 +28,8 @@ else:
 
 # --- 2. Configure Gemini (Updated for Gemini 3, TTS, and Safety) ---
 try:
-    genai.configure(api_key=GEMINI_API_KEY)
+    # Use the directly imported configure function
+    configure(api_key=GEMINI_API_KEY)
 
     # Lowered temperature for better adherence to complex instructions
     generation_config = {
@@ -38,27 +41,26 @@ try:
     }
 
     # --- SAFETY SETTINGS: Re-enabled to allow Skippy's sarcasm ---
-    # The new SDK supports this. We lower the block threshold for Harassment and Hate Speech.
     safety_settings = [
-        genai.types.SafetySetting(
-            category=genai.types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+        genai_types.SafetySetting(
+            category=genai_types.HarmCategory.HARM_CATEGORY_HARASSMENT,
             # Block content only if it is marked as HIGH probability of harm
-            threshold=genai.types.HarmBlockThreshold.BLOCK_ONLY_HIGH
+            threshold=genai_types.HarmBlockThreshold.BLOCK_ONLY_HIGH
         ),
-        genai.types.SafetySetting(
-            category=genai.types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+        genai_types.SafetySetting(
+            category=genai_types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
             # Block content only if it is marked as HIGH probability of harm
-            threshold=genai.types.HarmBlockThreshold.BLOCK_ONLY_HIGH
+            threshold=genai_types.HarmBlockThreshold.BLOCK_ONLY_HIGH
         ),
-        genai.types.SafetySetting(
-            category=genai.types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+        genai_types.SafetySetting(
+            category=genai_types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
             # Maintain default setting for this category (blocks Medium and above)
-            threshold=genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
+            threshold=genai_types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
         ),
-        genai.types.SafetySetting(
-            category=genai.types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+        genai_types.SafetySetting(
+            category=genai_types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
             # Maintain default setting for this category (blocks Medium and above)
-            threshold=genai.types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
+            threshold=genai_types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
         ),
     ]
 
