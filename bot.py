@@ -29,8 +29,8 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # Use the model from your snippet if available, otherwise fall back to stable exp
-# MODEL_ID = "gemini-2.5-flash-native-audio-preview-12-2025"
-MODEL_ID = "gemini-2.0-flash-exp"
+MODEL_ID = "gemini-2.5-flash-native-audio-preview-12-2025"
+# MODEL_ID = "gemini-2.0-flash-exp"
 
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.ERROR)
 logging.getLogger("discord.gateway").setLevel(logging.WARNING)
