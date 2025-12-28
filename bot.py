@@ -198,4 +198,33 @@ async def live(interaction: discord.Interaction):
 
     vc = interaction.guild.voice_client
     if not vc:
-        vc = await interaction.
+        vc = await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
+
+    gemini_input_queue = asyncio.Queue()
+    output_source = LiveAudioSource()
+
+    vc.listen(DiscordToGeminiSink(client.loop, gemini_input_queue))
+    vc.play(output_source)
+
+    vc.gemini_task = client.loop.create_task(
+        run_gemini_session(vc, gemini_input_queue, output_source)
+    )
+    await interaction.followup.send("Skippy is listening!")
+
+
+@tree.command(name="stop", description="Stop session.")
+async def stop(interaction: discord.Interaction):
+    if interaction.guild.voice_client:
+        if hasattr(interaction.guild.voice_client, 'gemini_task'):
+            interaction.guild.voice_client.gemini_task.cancel()
+        await interaction.guild.voice_client.disconnect()
+        await interaction.response.send_message("Session ended.")
+
+
+@client.event
+async def on_ready():
+    await tree.sync()
+    print(f"Skippy Live is Ready.")
+
+
+client.run(DISCORD_TOKEN)
