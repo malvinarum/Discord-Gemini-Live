@@ -1,394 +1,263 @@
 import os
-import discord
-from discord import app_commands
-from google import genai
-from google.genai import types
-from dotenv import load_dotenv
-from google.cloud import texttospeech
-# Removed: from google.cloud import speech (We don't need STT anymore!)
-import wave
-import time
 import asyncio
-import functools
+import discord
+import numpy as np
+import scipy.signal
+from discord import app_commands
 from discord.ext import voice_recv
+from google import genai
+from dotenv import load_dotenv
+import time
 
-# --- 1. Load Configuration ---
+# --- Configuration ---
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-BOT_PERSONALITY = os.getenv('BOT_PERSONALITY', 'You are a helpful, witty, and concise assistant.')
+# The specialized model for Live API
+MODEL_ID = "gemini-2.0-flash-exp"
 
-# --- VOICE CONFIGURATION UPDATE ---
-# Switched to 'en-GB-Neural2-D': A deep, British male voice (Neural2 is more human-like than WaveNet)
-TTS_VOICE_NAME = os.getenv('TTS_VOICE_NAME', 'en-GB-Neural2-D')
+# --- Audio Constants ---
+# Discord sends/receives 48kHz Stereo (2 channels)
+DISCORD_RATE = 48000
+DISCORD_CHANNELS = 2
 
-# --- MODEL CONFIGURATION ---
-# We use Flash because it handles Audio Input very quickly and cheaply
-GEMINI_MODEL_NAME = "gemini-2.5-flash-lite"
+# Gemini Live API expects 16kHz Mono (1 channel) for input
+# and sends 24kHz Mono (1 channel) for output
+GEMINI_INPUT_RATE = 16000
+GEMINI_OUTPUT_RATE = 24000
+FRAME_SIZE = 960  # Discord frame size (20ms)
 
-GOOGLE_SERVICE_JSON = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-if GOOGLE_SERVICE_JSON and os.path.exists(GOOGLE_SERVICE_JSON):
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GOOGLE_SERVICE_JSON
-else:
-    print("Warning: GOOGLE_APPLICATION_CREDENTIALS not set or file not found. TTS/STT will fail.")
 
-# --- 2. Configure Gemini (New SDK Pattern) ---
-try:
-    client_genai = genai.Client(api_key=GEMINI_API_KEY)
+class AudioResampler:
+    """Handles Real-time PCM resampling between Discord and Gemini."""
 
-    # --- VOICE SIMULATION GUIDANCE ---
-    voice_guidance = """
-    --- Voice Simulation Guidance ---
-    Your final responses must be written for a Text-to-Speech (TTS) engine, simulating a live, human conversation.
-    1. CONVERSATIONAL FLOW: Use a casual, informal, and interruptible speaking style.
-    2. PACING: Keep sentences concise. Use short sentences and natural transitions.
-    3. INFLECTION & PAUSING: Use proper and varied punctuation (Ellipses ..., Em dashes —, Commas ,).
-    4. AVOID LISTS: Never use bullet points or numbered lists.
-    5. FORMATTING: Do not use Markdown formatting like bolding or italics. Use only plain text.
+    @staticmethod
+    def discord_to_gemini(pcm_bytes):
+        """
+        Convert Discord (48kHz Stereo 16-bit) -> Gemini (16kHz Mono 16-bit).
+        Process: Merge Stereo to Mono -> Downsample 48k to 16k.
+        """
+        # Convert bytes to Int16 Array
+        audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
+
+        # Reshape to (Samples, Channels)
+        audio_data = audio_data.reshape(-1, 2)
+
+        # 1. Stereo to Mono (Average the channels)
+        mono_audio = audio_data.mean(axis=1).astype(np.int16)
+
+        # 2. Resample 48k -> 16k (Decimate by 3)
+        # Simple slicing [::3] is fast and 'good enough' for voice
+        # For production quality, use scipy.signal.resample
+        resampled_audio = mono_audio[::3]
+
+        return resampled_audio.tobytes()
+
+    @staticmethod
+    def gemini_to_discord(pcm_bytes):
+        """
+        Convert Gemini (24kHz Mono 16-bit) -> Discord (48kHz Stereo 16-bit).
+        Process: Upsample 24k to 48k -> Duplicate to Stereo.
+        """
+        audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
+
+        # 1. Resample 24k -> 48k (Upsample by 2)
+        # Linear interpolation is better than simple repetition for upsampling
+        # But for speed in python, we can just repeat elements
+        upsampled = np.repeat(audio_data, 2)
+
+        # 2. Mono to Stereo (Duplicate the array into 2 columns)
+        stereo = np.column_stack((upsampled, upsampled)).flatten()
+
+        return stereo.astype(np.int16).tobytes()
+
+
+class LiveAudioSource(discord.AudioSource):
+    """
+    A never-ending AudioSource that plays data from a queue.
+    If queue is empty, returns silence (to keep connection open).
     """
 
-    system_instruction = BOT_PERSONALITY + voice_guidance
+    def __init__(self):
+        self.queue = asyncio.Queue()
+        self.talking = False
+        self._buffer = bytearray()
 
-    generation_config = types.GenerateContentConfig(
-        temperature=0.8,
-        top_p=0.95,
-        top_k=64,
-        max_output_tokens=512,
-        response_mime_type="text/plain",
-        system_instruction=system_instruction,
-        safety_settings=[
-            types.SafetySetting(
-                category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH
-            ),
-            types.SafetySetting(
-                category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                threshold=types.HarmBlockThreshold.BLOCK_ONLY_HIGH
-            ),
-            types.SafetySetting(
-                category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                threshold=types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
-            ),
-            types.SafetySetting(
-                category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                threshold=types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
-            ),
-        ]
-    )
+    async def add_audio(self, pcm_bytes):
+        """Accepts raw Gemini audio (24kHz Mono)"""
+        # Convert to Discord format immediately upon receipt
+        discord_audio = AudioResampler.gemini_to_discord(pcm_bytes)
+        await self.queue.put(discord_audio)
 
-    print(f"Gemini Client initialized. Target Model: {GEMINI_MODEL_NAME}")
+    def read(self):
+        # Return 20ms of audio (3840 bytes for 48k stereo 16bit)
+        target_size = 3840
 
-except Exception as e:
-    print(f"FATAL Error configuring Gemini Client: {e}")
-    exit()
+        # Fill buffer from queue
+        while len(self._buffer) < target_size:
+            try:
+                # We use get_nowait() because read() is not async
+                chunk = self.queue.get_nowait()
+                self._buffer.extend(chunk)
+            except asyncio.QueueEmpty:
+                break
 
-# --- 3. Configure Google Cloud TTS ---
-try:
-    tts_client = texttospeech.TextToSpeechClient()
-    print("Google Cloud TTS client configured successfully.")
-except Exception as e:
-    print(f"Error configuring Google Cloud TTS: {e}")
+        if len(self._buffer) >= target_size:
+            data = self._buffer[:target_size]
+            self._buffer = self._buffer[target_size:]
+            return bytes(data)
+        else:
+            # Return silence if no data available
+            return b'\x00' * target_size
 
-# --- 4. Configure Discord Bot ---
+    def cleanup(self):
+        pass
+
+
+class DiscordToGeminiSink(voice_recv.AudioSink):
+    """Captures Discord audio and pushes it to the Gemini Loop."""
+
+    def __init__(self, loop, gemini_queue):
+        self.loop = loop
+        self.gemini_queue = gemini_queue
+
+    def wants_opus(self):
+        return False  # We want PCM
+
+    def write(self, user, data):
+        # 'data' is a UserData object containing .pcm
+        # We need to run this thread-safe
+        if user is None: return  # Ignore unknown sources
+
+        # Simple Voice Activity Detection (VAD) by volume
+        # (Optional: prevents sending total silence)
+        pcm = data.pcm
+        if len(pcm) > 0:
+            converted = AudioResampler.discord_to_gemini(pcm)
+            self.loop.call_soon_threadsafe(self.gemini_queue.put_nowait, converted)
+
+    def cleanup(self):
+        pass
+
+
+# --- Bot Setup ---
 intents = discord.Intents.default()
 intents.message_content = True
-intents.voice_states = True
-intents.members = True
-
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
+# Global Client for GenAI
+client_genai = genai.Client(api_key=GEMINI_API_KEY)
 
-# --- HELPER: Run Sync Gemini Calls in Thread ---
-async def generate_skippy_response(prompt_input):
+
+# --- The Gemini Live Session Logic ---
+async def run_gemini_session(voice_client, receive_queue, play_source):
     """
-    Wraps the synchronous Gemini Client call.
-    'prompt_input' can now be text OR an audio Part object.
+    Manages the persistent WebSocket connection to Gemini.
     """
+    print("Connecting to Gemini Live API...")
 
-    def _call_gemini():
-        max_retries = 3
-        base_delay = 1
+    config = {
+        "response_modalities": ["AUDIO"],
+    }
 
-        for attempt in range(max_retries):
-            try:
-                response = client_genai.models.generate_content(
-                    model=GEMINI_MODEL_NAME,
-                    contents=[prompt_input],  # Pass as a list
-                    config=generation_config
-                )
-                return response
-            except Exception as inner_e:
-                error_str = str(inner_e)
-                if "503" in error_str or "429" in error_str or "overloaded" in error_str.lower():
-                    if attempt < max_retries - 1:
-                        sleep_time = base_delay * (2 ** attempt)
-                        print(f"Gemini overloaded (Attempt {attempt + 1}/{max_retries}). Retrying...")
-                        time.sleep(sleep_time)
+    try:
+        async with client_genai.aio.live.connect(model=MODEL_ID, config=config) as session:
+            print("Gemini Connected! Start talking.")
+
+            # Task 1: Sender (Discord -> Gemini)
+            async def sender():
+                while True:
+                    audio_chunk = await receive_queue.get()
+                    # Streaming input to Gemini
+                    await session.send(input={"data": audio_chunk, "mime_type": "audio/pcm;rate=16000"},
+                                       end_of_turn=False)
+
+            # Task 2: Receiver (Gemini -> Discord)
+            async def receiver():
+                async for response in session.receive():
+                    # Check if response has audio data
+                    if response.server_content is None:
                         continue
-                print(f"Gemini generation failed: {inner_e}")
-                return None
 
-    return await client.loop.run_in_executor(None, _call_gemini)
+                    model_turn = response.server_content.model_turn
+                    if model_turn:
+                        for part in model_turn.parts:
+                            if part.inline_data:
+                                # We got audio bytes!
+                                await play_source.add_audio(part.inline_data.data)
+
+            # Run both concurrently
+            send_task = asyncio.create_task(sender())
+            recv_task = asyncio.create_task(receiver())
+
+            # Wait until one fails or we cancel
+            done, pending = await asyncio.wait(
+                [send_task, recv_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            for task in pending:
+                task.cancel()
+
+    except Exception as e:
+        print(f"Session Error: {e}")
+    finally:
+        print("Gemini Session Ended.")
 
 
-# --- 5. Bot Events ---
+# --- Commands ---
+
+@tree.command(name="live", description="Start a live, interruptible conversation!")
+async def live(interaction: discord.Interaction):
+    if not interaction.user.voice:
+        await interaction.response.send_message("Join a voice channel first!", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    # 1. Connect to Voice
+    vc = interaction.guild.voice_client
+    if not vc:
+        vc = await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
+
+    # 2. Setup Queues & Sources
+    gemini_input_queue = asyncio.Queue()  # Discord -> Gemini
+    output_source = LiveAudioSource()  # Gemini -> Discord
+
+    # 3. Start Listening (Capture User Audio)
+    # We pass the event loop and queue to the Sink
+    vc.listen(DiscordToGeminiSink(client.loop, gemini_input_queue))
+
+    # 4. Start Playing (Output Source)
+    # We play the custom source immediately. It will play silence until Gemini speaks.
+    vc.play(output_source)
+
+    # 5. Launch Gemini Session Background Task
+    # We store the task on the vc object to cancel it later if needed
+    vc.gemini_task = client.loop.create_task(
+        run_gemini_session(vc, gemini_input_queue, output_source)
+    )
+
+    await interaction.followup.send("Skippy is listening! (Disconnect to stop)")
+
+
+@tree.command(name="stop", description="Stop the live session.")
+async def stop(interaction: discord.Interaction):
+    if interaction.guild.voice_client:
+        if hasattr(interaction.guild.voice_client, 'gemini_task'):
+            interaction.guild.voice_client.gemini_task.cancel()
+
+        await interaction.guild.voice_client.disconnect()
+        await interaction.response.send_message("Session ended.")
+    else:
+        await interaction.response.send_message("Not connected.", ephemeral=True)
+
 
 @client.event
 async def on_ready():
-    try:
-        await tree.sync()
-        print("Command tree synced.")
-    except Exception as e:
-        print(f"Error syncing command tree: {e}")
-
-    print(f'Skippy (Native Audio Edition) is online. Logged in as {client.user}')
-    await client.change_presence(activity=discord.Game(name="Listening to your nonsense..."))
+    await tree.sync()
+    print(f"Skippy Live (Real-Time) is Ready.")
 
 
-# --- 6. Slash Commands (Text) ---
-
-@tree.command(name="ask", description="Ask a question to the Gemini AI.")
-async def ask(interaction: discord.Interaction, prompt: str):
-    await interaction.response.defer()
-
-    try:
-        print(f"User '{interaction.user.name}' asked: {prompt}")
-        # For text, we just pass the string
-        response = await generate_skippy_response(prompt)
-
-        gemini_response = ""
-        if response and response.text:
-            gemini_response = response.text
-        else:
-            gemini_response = "Hmph. The cosmic censors blocked me."
-
-        await send_long_message(interaction, f"**Skippy:** {gemini_response}")
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        await interaction.followup.send(f"An error occurred: {e}", ephemeral=True)
-
-
-# --- 7. Slash Commands (Voice Join/Leave/Say) ---
-# (These remain largely the same, ensuring we have voice_recv)
-
-@tree.command(name="join", description="Joins your current voice channel.")
-async def join(interaction: discord.Interaction):
-    await interaction.response.defer()
-    if not interaction.user.voice:
-        await interaction.followup.send("You're not in a voice channel.", ephemeral=True)
-        return
-    voice_channel = interaction.user.voice.channel
-
-    if interaction.guild.voice_client:
-        await interaction.followup.send("I'm already connected.")
-        return
-
-    try:
-        await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
-        await interaction.followup.send(f"Connected to `{voice_channel.name}`.")
-    except Exception as e:
-        await interaction.followup.send(f"Error connecting: {e}", ephemeral=True)
-
-
-@tree.command(name="leave", description="Leaves the voice channel.")
-async def leave(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    if not interaction.guild.voice_client:
-        await interaction.followup.send("I'm not connected.")
-        return
-    await interaction.guild.voice_client.disconnect()
-    await interaction.followup.send("Disconnected.")
-
-
-@tree.command(name="say", description="Speaks the given text.")
-async def say(interaction: discord.Interaction, text: str):
-    if not interaction.user.voice:
-        await interaction.response.send_message("Join a voice channel.", ephemeral=True)
-        return
-    await interaction.response.defer()
-
-    voice_client = interaction.guild.voice_client
-    if not voice_client:
-        try:
-            voice_client = await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
-        except Exception as e:
-            await interaction.followup.send(f"Failed to connect: {e}")
-            return
-
-    await speak_text(interaction, text)
-    await interaction.followup.send(f"Spoke: {text}")
-
-
-# --- 8. Slash Command (Chat - Native Audio) ---
-
-async def stop_listening_after(voice_client, delay: float):
-    await asyncio.sleep(delay)
-    print(f"Timeout reached. Stopping listening.")
-    voice_client.stop_listening()
-
-
-@tree.command(name="chat", description="Have a one-shot voice conversation.")
-async def chat(interaction: discord.Interaction):
-    if not interaction.user.voice:
-        await interaction.response.send_message("Join a voice channel first.", ephemeral=True)
-        return
-
-    voice_channel = interaction.user.voice.channel
-    await interaction.response.defer()
-
-    voice_client = interaction.guild.voice_client
-    if not voice_client:
-        try:
-            voice_client = await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
-        except Exception as e:
-            await interaction.followup.send(f"Failed to connect: {e}")
-            return
-    elif not isinstance(voice_client, voice_recv.VoiceRecvClient):
-        await voice_client.disconnect()
-        voice_client = await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
-
-    if voice_client.is_playing():
-        voice_client.stop()
-    voice_client.stop_listening()
-
-    try:
-        await speak_text(interaction, "I'm listening...")
-        await interaction.followup.send("I'm listening... (10s max)")
-        while voice_client.is_playing():
-            await asyncio.sleep(0.1)
-    except Exception as e:
-        await interaction.followup.send(f"Error speaking: {e}")
-        return
-
-    filename = f"rec_{interaction.id}_{int(time.time())}.wav"
-    sink = voice_recv.WaveSink(filename)
-
-    voice_client.listen(sink, after=lambda e: after_recording_callback(interaction, filename, e))
-    client.loop.create_task(stop_listening_after(voice_client, 10.0))
-
-
-def after_recording_callback(interaction, filename, exception=None):
-    if exception:
-        print(f"Recording error: {exception}")
-        return
-    if not interaction: return
-    client.loop.call_soon_threadsafe(process_audio_task, interaction, filename)
-
-
-def process_audio_task(interaction, filename):
-    client.loop.create_task(handle_audio_processing(interaction, filename))
-
-
-async def handle_audio_processing(interaction, filename):
-    try:
-        print(f"Processing Native Audio for {filename}...")
-
-        # 1. Read the audio file bytes
-        with open(filename, "rb") as f:
-            audio_bytes = f.read()
-
-        # 2. Prepare the input Part for Gemini
-        # This replaces the STT text string. We send the raw audio.
-        prompt_part = types.Part.from_bytes(
-            data=audio_bytes,
-            mime_type="audio/wav"
-        )
-
-        # 3. Send to Gemini (Native Audio Input)
-        print("Sending AUDIO bytes directly to Gemini...")
-        response = await generate_skippy_response(prompt_part)
-
-        gemini_response = ""
-        if response and response.text:
-            gemini_response = response.text
-            print(f"Skippy heard you and said: {gemini_response}")
-        else:
-            gemini_response = "Hmph. I heard noises, but the censors blocked my witty retort."
-            if response and response.candidates:
-                print(f"Safety Block: {response.candidates[0].finish_reason}")
-
-        await interaction.channel.send(f"**Skippy:** {gemini_response}")
-
-        tts_text = gemini_response.replace('**', '').replace('*', '').strip()
-        if tts_text:
-            await speak_text(interaction, tts_text)
-
-    except Exception as e:
-        print(f"Error in processing: {e}")
-        if not interaction.response.is_done():
-            await interaction.followup.send("Something went wrong processing the audio.")
-    finally:
-        if os.path.exists(filename):
-            try:
-                os.remove(filename)
-            except:
-                pass
-
-
-async def speak_text(interaction, text):
-    try:
-        synthesis_input = texttospeech.SynthesisInput(text=text)
-
-        # Use the NEW voice name
-        voice = texttospeech.VoiceSelectionParams(
-            language_code="en-GB",  # British for "Poppycock!"
-            name=TTS_VOICE_NAME  # en-GB-Neural2-D
-        )
-
-        # Tweak the audio to sound more "tired wizard"
-        audio_config = texttospeech.AudioConfig(
-            audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=0.85,  # Slower (Exhausted)
-            pitch=-4.0  # Deeper (Ancient)
-        )
-
-        response = await client.loop.run_in_executor(
-            None,
-            tts_client.synthesize_speech,
-            texttospeech.SynthesizeSpeechRequest(input=synthesis_input, voice=voice, audio_config=audio_config)
-        )
-
-        voice_client = interaction.guild.voice_client
-        if not voice_client: return
-
-        temp_audio_file = f"tts_{int(time.time())}.mp3"
-        with open(temp_audio_file, "wb") as out:
-            out.write(response.audio_content)
-
-        if voice_client.is_playing():
-            voice_client.stop()
-
-        voice_client.play(
-            discord.FFmpegPCMAudio(temp_audio_file),
-            after=lambda e: after_speech_cleanup(e, temp_audio_file)
-        )
-    except Exception as e:
-        print(f"TTS Error: {e}")
-
-
-def after_speech_cleanup(error, filename):
-    if os.path.exists(filename):
-        try:
-            os.remove(filename)
-        except:
-            pass
-
-
-async def send_long_message(interaction, text):
-    if len(text) <= 2000:
-        if not interaction.response.is_done():
-            await interaction.followup.send(text)
-        else:
-            await interaction.channel.send(text)
-    else:
-        for i in range(0, len(text), 2000):
-            await interaction.channel.send(text[i:i + 2000])
-
-
-# --- 11. Run ---
-try:
-    client.run(DISCORD_TOKEN)
-except Exception as e:
-    print(f"Run Error: {e}")
+client.run(DISCORD_TOKEN)
