@@ -114,6 +114,9 @@ class DiscordToGeminiSink(voice_recv.AudioSink):
             if converted:
                 self.loop.call_soon_threadsafe(self.gemini_queue.put_nowait, converted)
 
+    def cleanup(self):
+        pass
+
 
 # --- Bot Setup ---
 intents = discord.Intents.default()
