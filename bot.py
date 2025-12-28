@@ -2,20 +2,37 @@ import os
 import asyncio
 import discord
 import numpy as np
-import logging  # Added for silencing noise
+import logging
 from discord import app_commands
 from discord.ext import voice_recv
 from google import genai
 from dotenv import load_dotenv
 
-# --- 1. Configuration & Logging Hacks ---
+# --- 1. Monkey Patch for Opus Errors ---
+# This prevents the "corrupted stream" error from crashing the bot
+# when Discord sends bad packets (common on connection start/stop).
+import discord.ext.voice_recv.opus as _opus_lib
+
+original_decode = _opus_lib.Decoder._decode_packet
+
+
+def patched_decode(self, packet):
+    try:
+        return original_decode(self, packet)
+    except Exception:
+        # Return empty PCM on error to keep the loop alive
+        return packet, b'\x00' * 3840
+
+
+_opus_lib.Decoder._decode_packet = patched_decode
+
+# --- 2. Configuration & Logging ---
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 MODEL_ID = "gemini-2.0-flash-exp"
 
-# SILENCE THE RTCP SPAM!
-# This specific logger is responsible for the "unexpected rtcp packet" noise.
+# Silence the standard RTCP noise
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.ERROR)
 
 # Audio Constants
@@ -30,18 +47,24 @@ class AudioResampler:
     @staticmethod
     def discord_to_gemini(pcm_bytes):
         # Discord (48k Stereo) -> Gemini (16k Mono)
-        audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
-        audio_data = audio_data.reshape(-1, 2)
-        mono_audio = audio_data.mean(axis=1).astype(np.int16)  # Stereo -> Mono
-        return mono_audio[::3].tobytes()  # 48k -> 16k (Decimate)
+        try:
+            audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
+            audio_data = audio_data.reshape(-1, 2)
+            mono_audio = audio_data.mean(axis=1).astype(np.int16)  # Stereo -> Mono
+            return mono_audio[::3].tobytes()  # 48k -> 16k (Decimate)
+        except Exception:
+            return b''
 
     @staticmethod
     def gemini_to_discord(pcm_bytes):
         # Gemini (24k Mono) -> Discord (48k Stereo)
-        audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
-        upsampled = np.repeat(audio_data, 2)  # 24k -> 48k
-        stereo = np.column_stack((upsampled, upsampled)).flatten()  # Mono -> Stereo
-        return stereo.astype(np.int16).tobytes()
+        try:
+            audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
+            upsampled = np.repeat(audio_data, 2)  # 24k -> 48k
+            stereo = np.column_stack((upsampled, upsampled)).flatten()  # Mono -> Stereo
+            return stereo.astype(np.int16).tobytes()
+        except Exception:
+            return b''
 
 
 class LiveAudioSource(discord.AudioSource):
@@ -53,7 +76,8 @@ class LiveAudioSource(discord.AudioSource):
 
     async def add_audio(self, pcm_bytes):
         discord_audio = AudioResampler.gemini_to_discord(pcm_bytes)
-        await self.queue.put(discord_audio)
+        if discord_audio:
+            await self.queue.put(discord_audio)
 
     def read(self):
         target_size = 3840  # 20ms of 48k stereo 16bit
@@ -89,7 +113,8 @@ class DiscordToGeminiSink(voice_recv.AudioSink):
         pcm = data.pcm
         if len(pcm) > 0:
             converted = AudioResampler.discord_to_gemini(pcm)
-            self.loop.call_soon_threadsafe(self.gemini_queue.put_nowait, converted)
+            if converted:
+                self.loop.call_soon_threadsafe(self.gemini_queue.put_nowait, converted)
 
     def cleanup(self):
         pass
@@ -117,10 +142,15 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
             async def sender():
                 while True:
                     audio_chunk = await receive_queue.get()
-                    # UPDATED: Use send_realtime_input to fix DeprecationWarning
-                    await session.send_realtime_input(
-                        data=audio_chunk,
-                        mime_type="audio/pcm;rate=16000"
+                    if audio_chunk is None: continue
+
+                    # FIXED: Correct send method for google-genai SDK
+                    await session.send(
+                        input={
+                            "data": audio_chunk,
+                            "mime_type": "audio/pcm"
+                        },
+                        end_of_turn=False
                     )
 
             async def receiver():
