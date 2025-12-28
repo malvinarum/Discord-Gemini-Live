@@ -28,12 +28,12 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-# Use the model from your snippet if available, otherwise fall back to stable exp
+# Updated to the 2.5 preview model from your logs
 MODEL_ID = "gemini-2.5-flash-native-audio-preview-12-2025"
-# MODEL_ID = "gemini-2.0-flash-exp"
 
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.ERROR)
 logging.getLogger("discord.gateway").setLevel(logging.WARNING)
+logging.getLogger("discord.client").setLevel(logging.WARNING)
 
 
 class AudioResampler:
@@ -105,7 +105,6 @@ class DiscordToGeminiSink(voice_recv.AudioSink):
         if len(pcm) > 0:
             converted = AudioResampler.discord_to_gemini(pcm)
             if converted:
-                # We put the DICT directly into the queue, matching your snippet's logic
                 self.loop.call_soon_threadsafe(
                     self.gemini_queue.put_nowait,
                     {"data": converted, "mime_type": "audio/pcm;rate=16000"}
@@ -123,12 +122,12 @@ tree = app_commands.CommandTree(client)
 client_genai = genai.Client(api_key=GEMINI_API_KEY)
 
 
-# --- Cleaned Up Gemini Session (Using TaskGroup) ---
+# --- Cleaned Up Gemini Session ---
 async def run_gemini_session(voice_client, receive_queue, play_source):
     while True:  # Reconnect Loop
         print(f"Connecting to Gemini ({MODEL_ID})...")
 
-        # Clear queues
+        # Clear queues to avoid audio "ghosts"
         while not receive_queue.empty():
             try:
                 receive_queue.get_nowait()
@@ -141,7 +140,8 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                 "voice_config": {"prebuilt_voice_config": {"voice_name": "Aoede"}}
             },
             "system_instruction": {
-                "parts": [{"text": "You are Skippy. You are helpful, funny, and concise."}]
+                "parts": [
+                    {"text": "You are Skippy. You are helpful, funny, and concise. Speak at a relaxed, slow pace."}]
             }
         }
 
@@ -164,18 +164,19 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                             continue
 
                 async def receive_audio():
-                    while True:
-                        async for response in session.receive():
-                            if response.server_content and response.server_content.model_turn:
-                                for part in response.server_content.model_turn.parts:
-                                    if part.inline_data:
-                                        await play_source.add_audio(part.inline_data.data)
+                    async for response in session.receive():
+                        if response.server_content and response.server_content.model_turn:
+                            for part in response.server_content.model_turn.parts:
+                                if part.inline_data:
+                                    await play_source.add_audio(part.inline_data.data)
 
-                        # If the loop finishes, the turn is over or connection closed.
-                        print("Receive loop ended (Turn complete or connection drop)")
-                        break
+                    # CRITICAL FIX:
+                    # If this loop finishes, the session is dead.
+                    # We MUST raise an error to kill the TaskGroup and force a reconnect.
+                    print("Receive loop ended unexpectedly.")
+                    raise ConnectionAbortedError("Gemini closed the stream.")
 
-                # Use Python 3.11+ TaskGroup for better stability
+                # TaskGroup ensures if one fails (receive_audio), both die.
                 async with asyncio.TaskGroup() as tg:
                     tg.create_task(send_realtime())
                     tg.create_task(receive_audio())
@@ -197,33 +198,4 @@ async def live(interaction: discord.Interaction):
 
     vc = interaction.guild.voice_client
     if not vc:
-        vc = await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
-
-    gemini_input_queue = asyncio.Queue()
-    output_source = LiveAudioSource()
-
-    vc.listen(DiscordToGeminiSink(client.loop, gemini_input_queue))
-    vc.play(output_source)
-
-    vc.gemini_task = client.loop.create_task(
-        run_gemini_session(vc, gemini_input_queue, output_source)
-    )
-    await interaction.followup.send("Skippy is listening!")
-
-
-@tree.command(name="stop", description="Stop session.")
-async def stop(interaction: discord.Interaction):
-    if interaction.guild.voice_client:
-        if hasattr(interaction.guild.voice_client, 'gemini_task'):
-            interaction.guild.voice_client.gemini_task.cancel()
-        await interaction.guild.voice_client.disconnect()
-        await interaction.response.send_message("Session ended.")
-
-
-@client.event
-async def on_ready():
-    await tree.sync()
-    print(f"Skippy Live is Ready.")
-
-
-client.run(DISCORD_TOKEN)
+        vc = await interaction.
