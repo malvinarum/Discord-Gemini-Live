@@ -23,17 +23,15 @@ def _patched_decode(self, *args, **kwargs):
 
 discord.opus.Decoder.decode = _patched_decode
 
-# --- 2. Configuration & Logging ---
+# --- 2. Configuration ---
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-
 MODEL_ID = "gemini-2.5-flash-native-audio-preview-12-2025"
 
 # Clean logs
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.ERROR)
 logging.getLogger("discord.gateway").setLevel(logging.WARNING)
-logging.getLogger("discord.client").setLevel(logging.WARNING)
 
 
 class AudioResampler:
@@ -117,9 +115,8 @@ tree = app_commands.CommandTree(client)
 client_genai = genai.Client(api_key=GEMINI_API_KEY)
 
 
-# --- The Main Logic ---
 async def run_gemini_session(voice_client, receive_queue, play_source):
-    while True:  # Auto-Reconnect Loop
+    while True:
         print(f"Connecting to Gemini ({MODEL_ID})...")
 
         while not receive_queue.empty():
@@ -134,62 +131,57 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                 "voice_config": {"prebuilt_voice_config": {"voice_name": "Aoede"}}
             },
             "system_instruction": {
-                "parts": [
-                    {"text": "You are Skippy. You are helpful, funny, and concise. Speak at a relaxed, slow pace."}]
+                "parts": [{"text": "You are Skippy. Helpful, funny, concise. Relaxed pace."}]
             }
         }
 
         try:
             async with client_genai.aio.live.connect(model=MODEL_ID, config=config) as session:
-                print("Gemini Connected! (Waiting for you to speak...)")
+                print("Gemini Connected! (Waiting for audio...)")
 
                 async def sender():
                     buffer = bytearray()
-                    # Accumulate ~150ms (3 chunks of 1600 bytes)
+                    # 4800 bytes = ~150ms of audio
                     THRESHOLD = 4800
-
-                    # Silence chunk for keep-alive (16kHz mono silence)
-                    # We send this when we want to "mute" the mic but keep the socket open.
+                    # 320 bytes = 10ms of silence
                     SILENCE_CHUNK = b'\x00' * 320
 
                     while True:
                         try:
-                            # Wait for audio with short timeout
                             try:
+                                # Wait for audio (short timeout)
                                 msg = await asyncio.wait_for(receive_queue.get(), timeout=0.1)
-                            except asyncio.TimeoutError:
-                                # TIMEOUT: Logic for Keep-Alive
+
+                                # ECHO GATE: If bot is talking, ignore input BUT SEND SILENCE
                                 if play_source.is_playing():
-                                    # If bot is talking, send silence to prevent timeout
+                                    buffer.clear()
+                                    # Send silence to keep socket alive
                                     await session.send_realtime_input(
                                         audio={"data": SILENCE_CHUNK, "mime_type": "audio/pcm"}
                                     )
-                                elif len(buffer) > 0:
-                                    # If user stopped talking, flush buffer
+                                    continue
+
+                                buffer.extend(msg)
+
+                                if len(buffer) >= THRESHOLD:
                                     await session.send_realtime_input(
                                         audio={"data": bytes(buffer), "mime_type": "audio/pcm"}
                                     )
                                     buffer.clear()
+
+                            except asyncio.TimeoutError:
+                                # If no audio from Discord, check if we need to flush buffer
+                                if len(buffer) > 0:
+                                    await session.send_realtime_input(
+                                        audio={"data": bytes(buffer), "mime_type": "audio/pcm"}
+                                    )
+                                    buffer.clear()
+                                # No data? Send silence keep-alive
+                                else:
+                                    await session.send_realtime_input(
+                                        audio={"data": SILENCE_CHUNK, "mime_type": "audio/pcm"}
+                                    )
                                 continue
-
-                            # ECHO CANCELLATION
-                            if play_source.is_playing():
-                                # We MUST send something, or socket dies. Send silence.
-                                buffer.clear()
-                                await session.send_realtime_input(
-                                    audio={"data": SILENCE_CHUNK, "mime_type": "audio/pcm"}
-                                )
-                                continue
-
-                            # ACCUMULATE
-                            buffer.extend(msg)
-
-                            # SEND IF FULL
-                            if len(buffer) >= THRESHOLD:
-                                await session.send_realtime_input(
-                                    audio={"data": bytes(buffer), "mime_type": "audio/pcm"}
-                                )
-                                buffer.clear()
 
                         except asyncio.CancelledError:
                             break
@@ -208,8 +200,7 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                         except Exception as e:
                             print(f"Receiver Error: {e}")
                             break
-
-                        print("Connection closed by server.")
+                        print("Receiver closed.")
                         break
 
                 send_task = asyncio.create_task(sender())
@@ -219,37 +210,35 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                     [send_task, recv_task],
                     return_when=asyncio.FIRST_COMPLETED
                 )
-
                 for task in pending: task.cancel()
 
         except Exception as e:
             print(f"Session Error: {e}")
 
-        print("Reconnecting in 1 second...")
+        print("Reconnecting...")
         await asyncio.sleep(1)
 
 
 @tree.command(name="live", description="Start a live conversation!")
 async def live(interaction: discord.Interaction):
     if not interaction.user.voice:
-        await interaction.response.send_message("Join a voice channel first!", ephemeral=True)
+        await interaction.response.send_message("Join voice first!", ephemeral=True)
         return
-
     await interaction.response.defer()
+
     vc = interaction.guild.voice_client
     if not vc:
         vc = await interaction.user.voice.channel.connect(cls=voice_recv.VoiceRecvClient)
 
-    gemini_input_queue = asyncio.Queue()
+    gemini_queue = asyncio.Queue()
     output_source = LiveAudioSource()
 
-    vc.listen(DiscordToGeminiSink(client.loop, gemini_input_queue))
+    vc.listen(DiscordToGeminiSink(client.loop, gemini_queue))
     vc.play(output_source)
 
     vc.gemini_task = client.loop.create_task(
-        run_gemini_session(vc, gemini_input_queue, output_source)
+        run_gemini_session(vc, gemini_queue, output_source)
     )
-
     await interaction.followup.send("Skippy is listening!")
 
 
@@ -259,7 +248,7 @@ async def stop(interaction: discord.Interaction):
         if hasattr(interaction.guild.voice_client, 'gemini_task'):
             interaction.guild.voice_client.gemini_task.cancel()
         await interaction.guild.voice_client.disconnect()
-        await interaction.response.send_message("Session ended.")
+        await interaction.response.send_message("Stopped.")
 
 
 @client.event
