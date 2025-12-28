@@ -23,7 +23,7 @@ def _patched_decode(self, *args, **kwargs):
 
 discord.opus.Decoder.decode = _patched_decode
 
-# --- 2. Configuration & Logging ---
+# --- 2. Configuration & Logging Hacks ---
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
@@ -31,6 +31,7 @@ MODEL_ID = os.getenv('GEMINI_MODEL_ID', "gemini-2.5-flash-native-audio-preview-1
 VOICE_NAME = os.getenv('GEMINI_VOICE_NAME', "Aoede")
 SYSTEM_PROMPT = os.getenv('BOT_PERSONALITY')
 
+# SILENCE THE NOISE
 logging.getLogger("discord.ext.voice_recv").setLevel(logging.ERROR)
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.ERROR)
 logging.getLogger("discord.gateway").setLevel(logging.WARNING)
@@ -106,6 +107,10 @@ class DiscordToGeminiSink(voice_recv.AudioSink):
             if converted:
                 self.loop.call_soon_threadsafe(self.gemini_queue.put_nowait, converted)
 
+    # RESTORED: This method is required by the abstract base class
+    def cleanup(self):
+        pass
+
 
 # --- Bot Setup ---
 intents = discord.Intents.default()
@@ -116,7 +121,6 @@ client_genai = genai.Client(api_key=GEMINI_API_KEY)
 
 
 async def update_skippy_presence(state):
-    """Updates Skippy's visual status on Discord based on his current wizardly mood."""
     moods = {
         "idle": (discord.Status.idle, "Napping..."),
         "listening": (discord.Status.online, "mortals bumble"),
@@ -202,11 +206,9 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                         try:
                             async for response in session.receive():
                                 if response.server_content and response.server_content.model_turn:
-                                    # Set status to thinking when we get the turn start
                                     await update_skippy_presence("thinking")
                                     for part in response.server_content.model_turn.parts:
                                         if part.inline_data:
-                                            # Switch to speaking when audio arrives
                                             await update_skippy_presence("speaking")
                                             await play_source.add_audio(part.inline_data.data)
                         except Exception as e:
