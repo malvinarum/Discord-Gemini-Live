@@ -151,7 +151,6 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                     # --- HAIL MARY: ACCUMULATION BUFFER ---
                     buffer = bytearray()
                     # 4800 bytes = ~150ms of audio (16kHz * 2 bytes * 0.15s)
-                    # This reduces API calls by 7x, stabilizing the connection.
                     THRESHOLD = 4800
 
                     while True:
@@ -160,24 +159,29 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                             try:
                                 msg = await asyncio.wait_for(receive_queue.get(), timeout=0.2)
                             except asyncio.TimeoutError:
-                                # If silence and we have data leftover, FLUSH IT
+                                # SILENCE DETECTED
                                 if len(buffer) > 0:
+                                    print(f" [SEND-FLUSH] Sending {len(buffer)} bytes (Silence)")
                                     await session.send_realtime_input(
                                         audio={"data": bytes(buffer), "mime_type": "audio/pcm"}
                                     )
                                     buffer.clear()
                                 continue
 
-                            # Echo cancellation: Don't send if bot is speaking
+                            # ECHO CANCELLATION
                             if play_source.is_playing():
-                                buffer.clear()  # Dump buffer
+                                if len(buffer) > 0:
+                                    print(f" [ECHO-GATE] Dumping {len(buffer)} bytes (Bot speaking)")
+                                buffer.clear()
                                 continue
 
-                            # Add to buffer
+                            # ACCUMULATE
                             buffer.extend(msg)
+                            # print(f" [BUFFER] {len(buffer)}/{THRESHOLD}", end="\r")
 
-                            # Only send if we reached the threshold size
+                            # SEND IF FULL
                             if len(buffer) >= THRESHOLD:
+                                print(f" [SEND-FULL] Sending {len(buffer)} bytes (Threshold met)")
                                 await session.send_realtime_input(
                                     audio={"data": bytes(buffer), "mime_type": "audio/pcm"}
                                 )
@@ -196,6 +200,7 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                                 if response.server_content and response.server_content.model_turn:
                                     for part in response.server_content.model_turn.parts:
                                         if part.inline_data:
+                                            print(f" [RECV] Got {len(part.inline_data.data)} bytes audio")
                                             await play_source.add_audio(part.inline_data.data)
                         except Exception as e:
                             print(f"Receiver Error: {e}")
@@ -242,7 +247,7 @@ async def live(interaction: discord.Interaction):
         run_gemini_session(vc, gemini_input_queue, output_source)
     )
 
-    await interaction.followup.send("Skippy is listening!")
+    await interaction.followup.send("Skippy is listening! (Debug Mode)")
 
 
 @tree.command(name="stop", description="Stop session.")
