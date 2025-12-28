@@ -8,23 +8,25 @@ from discord.ext import voice_recv
 from google import genai
 from dotenv import load_dotenv
 
-# --- 1. Monkey Patch for Opus Errors ---
-# This prevents the "corrupted stream" error from crashing the bot
-# when Discord sends bad packets (common on connection start/stop).
-import discord.ext.voice_recv.opus as _opus_lib
+# --- 1. Robust Monkey Patch for Opus Errors ---
+# This patches the standard discord.py decoder to ignore corruption errors.
+# It works by wrapping the low-level decode method.
+import discord.opus
 
-original_decode = _opus_lib.Decoder._decode_packet
+_original_decode = discord.opus.Decoder.decode
 
 
-def patched_decode(self, packet):
+def _patched_decode(self, *args, **kwargs):
     try:
-        return original_decode(self, packet)
-    except Exception:
-        # Return empty PCM on error to keep the loop alive
-        return packet, b'\x00' * 3840
+        return _original_decode(self, *args, **kwargs)
+    except discord.opus.OpusError:
+        # When a corrupted packet is received, return 20ms of silence (stereo, 48k)
+        # to keep the audio stream flowing without crashing the bot.
+        # 960 samples * 2 channels * 2 bytes = 3840 bytes
+        return b'\x00' * 3840
 
 
-_opus_lib.Decoder._decode_packet = patched_decode
+discord.opus.Decoder.decode = _patched_decode
 
 # --- 2. Configuration & Logging ---
 load_dotenv()
@@ -32,7 +34,7 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 MODEL_ID = "gemini-2.0-flash-exp"
 
-# Silence the standard RTCP noise
+# Silence the standard RTCP noise from the voice receiver
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.ERROR)
 
 # Audio Constants
