@@ -28,7 +28,6 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-# Using the preview model
 MODEL_ID = "gemini-2.5-flash-native-audio-preview-12-2025"
 
 # Clean logs
@@ -40,7 +39,6 @@ logging.getLogger("discord.client").setLevel(logging.WARNING)
 class AudioResampler:
     @staticmethod
     def discord_to_gemini(pcm_bytes):
-        # 48kHz Stereo -> 16kHz Mono
         try:
             audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
             audio_data = audio_data.reshape(-1, 2)
@@ -51,7 +49,6 @@ class AudioResampler:
 
     @staticmethod
     def gemini_to_discord(pcm_bytes):
-        # 24kHz Mono -> 48kHz Stereo
         try:
             audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
             upsampled = np.repeat(audio_data, 2)
@@ -125,7 +122,6 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
     while True:  # Auto-Reconnect Loop
         print(f"Connecting to Gemini ({MODEL_ID})...")
 
-        # 1. Drain queue (prevent ghosts)
         while not receive_queue.empty():
             try:
                 receive_queue.get_nowait()
@@ -148,20 +144,28 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                 print("Gemini Connected! (Waiting for you to speak...)")
 
                 async def sender():
-                    # --- HAIL MARY: ACCUMULATION BUFFER ---
                     buffer = bytearray()
-                    # 4800 bytes = ~150ms of audio (16kHz * 2 bytes * 0.15s)
+                    # Accumulate ~150ms (3 chunks of 1600 bytes)
                     THRESHOLD = 4800
+
+                    # Silence chunk for keep-alive (16kHz mono silence)
+                    # We send this when we want to "mute" the mic but keep the socket open.
+                    SILENCE_CHUNK = b'\x00' * 320
 
                     while True:
                         try:
-                            # Wait for audio, but timeout quickly (200ms) to detect silence
+                            # Wait for audio with short timeout
                             try:
-                                msg = await asyncio.wait_for(receive_queue.get(), timeout=0.2)
+                                msg = await asyncio.wait_for(receive_queue.get(), timeout=0.1)
                             except asyncio.TimeoutError:
-                                # SILENCE DETECTED
-                                if len(buffer) > 0:
-                                    print(f" [SEND-FLUSH] Sending {len(buffer)} bytes (Silence)")
+                                # TIMEOUT: Logic for Keep-Alive
+                                if play_source.is_playing():
+                                    # If bot is talking, send silence to prevent timeout
+                                    await session.send_realtime_input(
+                                        audio={"data": SILENCE_CHUNK, "mime_type": "audio/pcm"}
+                                    )
+                                elif len(buffer) > 0:
+                                    # If user stopped talking, flush buffer
                                     await session.send_realtime_input(
                                         audio={"data": bytes(buffer), "mime_type": "audio/pcm"}
                                     )
@@ -170,18 +174,18 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
 
                             # ECHO CANCELLATION
                             if play_source.is_playing():
-                                if len(buffer) > 0:
-                                    print(f" [ECHO-GATE] Dumping {len(buffer)} bytes (Bot speaking)")
+                                # We MUST send something, or socket dies. Send silence.
                                 buffer.clear()
+                                await session.send_realtime_input(
+                                    audio={"data": SILENCE_CHUNK, "mime_type": "audio/pcm"}
+                                )
                                 continue
 
                             # ACCUMULATE
                             buffer.extend(msg)
-                            # print(f" [BUFFER] {len(buffer)}/{THRESHOLD}", end="\r")
 
                             # SEND IF FULL
                             if len(buffer) >= THRESHOLD:
-                                print(f" [SEND-FULL] Sending {len(buffer)} bytes (Threshold met)")
                                 await session.send_realtime_input(
                                     audio={"data": bytes(buffer), "mime_type": "audio/pcm"}
                                 )
@@ -200,7 +204,6 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                                 if response.server_content and response.server_content.model_turn:
                                     for part in response.server_content.model_turn.parts:
                                         if part.inline_data:
-                                            print(f" [RECV] Got {len(part.inline_data.data)} bytes audio")
                                             await play_source.add_audio(part.inline_data.data)
                         except Exception as e:
                             print(f"Receiver Error: {e}")
@@ -247,7 +250,7 @@ async def live(interaction: discord.Interaction):
         run_gemini_session(vc, gemini_input_queue, output_source)
     )
 
-    await interaction.followup.send("Skippy is listening! (Debug Mode)")
+    await interaction.followup.send("Skippy is listening!")
 
 
 @tree.command(name="stop", description="Stop session.")
