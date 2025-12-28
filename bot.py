@@ -30,7 +30,6 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 MODEL_ID = "gemini-2.0-flash-exp"
 
-# Keep these logs quiet so we can see our custom debug prints
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.ERROR)
 logging.getLogger("discord.gateway").setLevel(logging.WARNING)
 logging.getLogger("discord.client").setLevel(logging.WARNING)
@@ -65,11 +64,13 @@ class LiveAudioSource(discord.AudioSource):
         self.debug_tick = 0
 
     async def add_audio(self, pcm_bytes):
-        # DEBUG: Confirm we are adding data to the play queue
-        # print(f" [PLAY] Queueing {len(pcm_bytes)} bytes")
         discord_audio = AudioResampler.gemini_to_discord(pcm_bytes)
         if discord_audio:
             await self.queue.put(discord_audio)
+
+    # NEW: Check if bot is currently speaking
+    def is_playing(self):
+        return len(self._buffer) > 0 or not self.queue.empty()
 
     def read(self):
         target_size = 3840
@@ -85,10 +86,6 @@ class LiveAudioSource(discord.AudioSource):
             self._buffer = self._buffer[target_size:]
             return bytes(data)
 
-        # DEBUG: Only print silence warning every 100 frames to reduce spam
-        self.debug_tick += 1
-        if self.debug_tick % 100 == 0:
-            print(" [SILENCE] Playing silence...")
         return b'\x00' * target_size
 
     def cleanup(self):
@@ -125,19 +122,16 @@ client_genai = genai.Client(api_key=GEMINI_API_KEY)
 
 # --- Gemini Session ---
 async def run_gemini_session(voice_client, receive_queue, play_source):
-    while True:  # Auto-Reconnect Loop
+    while True:
         print("Connecting to Gemini Live API...")
 
-        # 1. Add System Instruction to ensure bot speaks on reconnect
         config = {
             "response_modalities": ["AUDIO"],
             "system_instruction": {
-                "parts": [
-                    {"text": "You are Skippy, a helpful Discord voice assistant. You answer concisely and naturally."}]
+                "parts": [{"text": "You are Skippy. You are helpful, concise, and funny."}]
             }
         }
 
-        # Clear queue to prevent old audio ghosting
         while not receive_queue.empty():
             try:
                 receive_queue.get_nowait()
@@ -151,13 +145,16 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                 async def sender():
                     while True:
                         try:
-                            # Wait for audio (timeout allows us to check if session is still alive)
                             audio_chunk = await asyncio.wait_for(receive_queue.get(), timeout=1.0)
                             if audio_chunk is None: continue
 
-                            # print(f" [GEMINI-IN] Sending {len(audio_chunk)} bytes")
+                            # --- ECHO GATE ---
+                            # If the bot is currently playing audio, IGNORE user input.
+                            # This prevents the bot from hearing itself and cancelling its own turn.
+                            if play_source.is_playing():
+                                continue
+                                # -----------------
 
-                            # 2. Explicitly set rate in mime_type
                             await session.send_realtime_input(
                                 audio={
                                     "data": audio_chunk,
@@ -193,18 +190,13 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
 
                 for task in pending: task.cancel()
 
-                # Check why it ended
-                for task in done:
-                    if task.exception():
-                        print(f"Task Error: {task.exception()}")
-
         except asyncio.CancelledError:
-            print("Session cancelled by user.")
+            print("Session cancelled.")
             break
         except Exception as e:
             print(f"Connection Error: {e}")
 
-        print("Gemini Session Ended. Reconnecting in 1 second...")
+        print("Session Ended. Reconnecting...")
         await asyncio.sleep(1)
 
 
