@@ -23,15 +23,13 @@ def _patched_decode(self, *args, **kwargs):
 
 discord.opus.Decoder.decode = _patched_decode
 
-# --- 2. Configuration ---
+# --- 2. Configuration & Logging ---
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-MODEL_ID = "gemini-2.5-flash-native-audio-preview-12-2025"
-
-# Clean logs
-logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.ERROR)
-logging.getLogger("discord.gateway").setLevel(logging.WARNING)
+MODEL_ID = os.getenv('GEMINI_MODEL_ID', "gemini-2.0-flash-exp")
+VOICE_NAME = os.getenv('GEMINI_VOICE_NAME', "Aoede")
+SYSTEM_PROMPT = os.getenv('BOT_PERSONALITY')
 
 
 class AudioResampler:
@@ -128,10 +126,10 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
         config = {
             "response_modalities": ["AUDIO"],
             "speech_config": {
-                "voice_config": {"prebuilt_voice_config": {"voice_name": "Aoede"}}
+                "voice_config": {"prebuilt_voice_config": {"voice_name": VOICE_NAME}}
             },
             "system_instruction": {
-                "parts": [{"text": "You are Skippy. Helpful, funny, concise. Relaxed pace."}]
+                "parts": [{"text": SYSTEM_PROMPT}]
             }
         }
 
