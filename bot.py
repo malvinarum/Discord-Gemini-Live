@@ -28,7 +28,7 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-# Using the preview model that worked for you
+# Using the preview model
 MODEL_ID = "gemini-2.5-flash-native-audio-preview-12-2025"
 
 # Clean logs
@@ -147,24 +147,42 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
             async with client_genai.aio.live.connect(model=MODEL_ID, config=config) as session:
                 print("Gemini Connected! (Waiting for you to speak...)")
 
-                # REMOVED: The automatic "Kickstart" text message.
-                # Now it sits and waits for audio.
-
                 async def sender():
+                    # --- HAIL MARY: ACCUMULATION BUFFER ---
+                    buffer = bytearray()
+                    # 4800 bytes = ~150ms of audio (16kHz * 2 bytes * 0.15s)
+                    # This reduces API calls by 7x, stabilizing the connection.
+                    THRESHOLD = 4800
+
                     while True:
                         try:
-                            # Wait for audio from Discord
-                            msg = await asyncio.wait_for(receive_queue.get(), timeout=1.0)
-
-                            # Echo cancellation: Don't send if bot is currently speaking
-                            if play_source.is_playing():
+                            # Wait for audio, but timeout quickly (200ms) to detect silence
+                            try:
+                                msg = await asyncio.wait_for(receive_queue.get(), timeout=0.2)
+                            except asyncio.TimeoutError:
+                                # If silence and we have data leftover, FLUSH IT
+                                if len(buffer) > 0:
+                                    await session.send_realtime_input(
+                                        audio={"data": bytes(buffer), "mime_type": "audio/pcm"}
+                                    )
+                                    buffer.clear()
                                 continue
 
-                            await session.send_realtime_input(
-                                audio={"data": msg, "mime_type": "audio/pcm"}
-                            )
-                        except asyncio.TimeoutError:
-                            continue  # Keep loop alive
+                            # Echo cancellation: Don't send if bot is speaking
+                            if play_source.is_playing():
+                                buffer.clear()  # Dump buffer
+                                continue
+
+                            # Add to buffer
+                            buffer.extend(msg)
+
+                            # Only send if we reached the threshold size
+                            if len(buffer) >= THRESHOLD:
+                                await session.send_realtime_input(
+                                    audio={"data": bytes(buffer), "mime_type": "audio/pcm"}
+                                )
+                                buffer.clear()
+
                         except asyncio.CancelledError:
                             break
                         except Exception as e:
@@ -183,7 +201,6 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                             print(f"Receiver Error: {e}")
                             break
 
-                        # If loop finishes naturally, connection dropped
                         print("Connection closed by server.")
                         break
 
