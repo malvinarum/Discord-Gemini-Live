@@ -10,6 +10,7 @@ from google.genai import types
 from dotenv import load_dotenv
 
 # --- 1. Robust Monkey Patch for Opus Errors ---
+# This prevents the bot from crashing if Discord sends bad audio packets.
 import discord.opus
 
 _original_decode = discord.opus.Decoder.decode
@@ -30,6 +31,7 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 MODEL_ID = "gemini-2.0-flash-exp"
 
+# Silence technical logs to keep console clean
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.ERROR)
 logging.getLogger("discord.gateway").setLevel(logging.WARNING)
 logging.getLogger("discord.client").setLevel(logging.WARNING)
@@ -38,6 +40,7 @@ logging.getLogger("discord.client").setLevel(logging.WARNING)
 class AudioResampler:
     @staticmethod
     def discord_to_gemini(pcm_bytes):
+        # Convert Discord's 48kHz Stereo -> Gemini's 16kHz Mono
         try:
             audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
             audio_data = audio_data.reshape(-1, 2)
@@ -48,6 +51,7 @@ class AudioResampler:
 
     @staticmethod
     def gemini_to_discord(pcm_bytes):
+        # Convert Gemini's 24kHz Mono -> Discord's 48kHz Stereo
         try:
             audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
             upsampled = np.repeat(audio_data, 2)
@@ -61,14 +65,13 @@ class LiveAudioSource(discord.AudioSource):
     def __init__(self):
         self.queue = asyncio.Queue()
         self._buffer = bytearray()
-        self.debug_tick = 0
 
     async def add_audio(self, pcm_bytes):
         discord_audio = AudioResampler.gemini_to_discord(pcm_bytes)
         if discord_audio:
             await self.queue.put(discord_audio)
 
-    # NEW: Check if bot is currently speaking
+    # CRITICAL: This tells the bot "I am speaking right now"
     def is_playing(self):
         return len(self._buffer) > 0 or not self.queue.empty()
 
@@ -127,11 +130,21 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
 
         config = {
             "response_modalities": ["AUDIO"],
+            "speech_config": {
+                "voice_config": {
+                    "prebuilt_voice_config": {
+                        "voice_name": "Aoede"  # Closest match to "Lyra"
+                    }
+                }
+            },
             "system_instruction": {
-                "parts": [{"text": "You are Skippy. You are helpful, concise, and funny."}]
+                "parts": [{
+                    "text": "You are Skippy. You are helpful, funny, and concise. Speak at a relaxed, slow pace."
+                }]
             }
         }
 
+        # Clear old audio so the bot doesn't hear "ghosts"
         while not receive_queue.empty():
             try:
                 receive_queue.get_nowait()
@@ -149,8 +162,8 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                             if audio_chunk is None: continue
 
                             # --- ECHO GATE ---
-                            # If the bot is currently playing audio, IGNORE user input.
-                            # This prevents the bot from hearing itself and cancelling its own turn.
+                            # If the bot is talking, STOP LISTENING.
+                            # This prevents the bot from hearing itself and cutting off.
                             if play_source.is_playing():
                                 continue
                                 # -----------------
@@ -175,7 +188,7 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                             if model_turn:
                                 for part in model_turn.parts:
                                     if part.inline_data:
-                                        print(f" [GEMINI-OUT] Received {len(part.inline_data.data)} bytes")
+                                        # print(f" [GEMINI-OUT] Received {len(part.inline_data.data)} bytes")
                                         await play_source.add_audio(part.inline_data.data)
                     except Exception as e:
                         print(f"Receiver Error: {e}")
