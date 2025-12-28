@@ -6,12 +6,10 @@ import logging
 from discord import app_commands
 from discord.ext import voice_recv
 from google import genai
-from google.genai import types  # Added for safer typing
+from google.genai import types
 from dotenv import load_dotenv
 
 # --- 1. Robust Monkey Patch for Opus Errors ---
-# This patches the standard discord.py decoder to ignore corruption errors.
-# It works by wrapping the low-level decode method.
 import discord.opus
 
 _original_decode = discord.opus.Decoder.decode
@@ -21,9 +19,6 @@ def _patched_decode(self, *args, **kwargs):
     try:
         return _original_decode(self, *args, **kwargs)
     except discord.opus.OpusError:
-        # When a corrupted packet is received, return 20ms of silence (stereo, 48k)
-        # to keep the audio stream flowing without crashing the bot.
-        # 960 samples * 2 channels * 2 bytes = 3840 bytes
         return b'\x00' * 3840
 
 
@@ -35,55 +30,49 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 MODEL_ID = "gemini-2.0-flash-exp"
 
-# Silence the standard RTCP noise from the voice receiver
+# Keep these logs quiet so we can see our custom debug prints
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.ERROR)
-
-# Audio Constants
-DISCORD_RATE = 48000
-GEMINI_INPUT_RATE = 16000
-GEMINI_OUTPUT_RATE = 24000
+logging.getLogger("discord.gateway").setLevel(logging.WARNING)
+logging.getLogger("discord.client").setLevel(logging.WARNING)
 
 
 class AudioResampler:
-    """Handles Real-time PCM resampling between Discord and Gemini."""
-
     @staticmethod
     def discord_to_gemini(pcm_bytes):
-        # Discord (48k Stereo) -> Gemini (16k Mono)
         try:
             audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
             audio_data = audio_data.reshape(-1, 2)
-            mono_audio = audio_data.mean(axis=1).astype(np.int16)  # Stereo -> Mono
-            return mono_audio[::3].tobytes()  # 48k -> 16k (Decimate)
+            mono_audio = audio_data.mean(axis=1).astype(np.int16)
+            return mono_audio[::3].tobytes()
         except Exception:
             return b''
 
     @staticmethod
     def gemini_to_discord(pcm_bytes):
-        # Gemini (24k Mono) -> Discord (48k Stereo)
         try:
             audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
-            upsampled = np.repeat(audio_data, 2)  # 24k -> 48k
-            stereo = np.column_stack((upsampled, upsampled)).flatten()  # Mono -> Stereo
+            upsampled = np.repeat(audio_data, 2)
+            stereo = np.column_stack((upsampled, upsampled)).flatten()
             return stereo.astype(np.int16).tobytes()
         except Exception:
             return b''
 
 
 class LiveAudioSource(discord.AudioSource):
-    """Never-ending source that plays from a queue or silence."""
-
     def __init__(self):
         self.queue = asyncio.Queue()
         self._buffer = bytearray()
+        self.debug_tick = 0
 
     async def add_audio(self, pcm_bytes):
+        # DEBUG: Confirm we are adding data to the play queue
+        print(f" [PLAY] Queueing {len(pcm_bytes)} bytes")
         discord_audio = AudioResampler.gemini_to_discord(pcm_bytes)
         if discord_audio:
             await self.queue.put(discord_audio)
 
     def read(self):
-        target_size = 3840  # 20ms of 48k stereo 16bit
+        target_size = 3840
         while len(self._buffer) < target_size:
             try:
                 chunk = self.queue.get_nowait()
@@ -95,15 +84,18 @@ class LiveAudioSource(discord.AudioSource):
             data = self._buffer[:target_size]
             self._buffer = self._buffer[target_size:]
             return bytes(data)
-        return b'\x00' * target_size  # Silence
+
+        # DEBUG: Only print silence warning every 50 frames (approx 1 sec)
+        self.debug_tick += 1
+        if self.debug_tick % 50 == 0:
+            print(" [SILENCE] Playing silence...")
+        return b'\x00' * target_size
 
     def cleanup(self):
         pass
 
 
 class DiscordToGeminiSink(voice_recv.AudioSink):
-    """Captures Discord audio to Gemini."""
-
     def __init__(self, loop, gemini_queue):
         self.loop = loop
         self.gemini_queue = gemini_queue
@@ -115,12 +107,12 @@ class DiscordToGeminiSink(voice_recv.AudioSink):
         if user is None: return
         pcm = data.pcm
         if len(pcm) > 0:
+            # DEBUG: Confirm we are hearing the user
+            print(f" [DISCORD] Heard {len(pcm)} bytes from {user.name}")
+
             converted = AudioResampler.discord_to_gemini(pcm)
             if converted:
                 self.loop.call_soon_threadsafe(self.gemini_queue.put_nowait, converted)
-
-    def cleanup(self):
-        pass
 
 
 # --- Bot Setup ---
@@ -135,7 +127,6 @@ client_genai = genai.Client(api_key=GEMINI_API_KEY)
 async def run_gemini_session(voice_client, receive_queue, play_source):
     print("Connecting to Gemini Live API...")
 
-    # Config for the session
     config = {"response_modalities": ["AUDIO"]}
 
     try:
@@ -147,8 +138,9 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                     audio_chunk = await receive_queue.get()
                     if audio_chunk is None: continue
 
-                    # FIXED: Use send_realtime_input with correct 'audio' kwarg
-                    # This avoids the DeprecationWarning and the TypeError
+                    # DEBUG: Confirm we are sending to Gemini
+                    print(f" [GEMINI-IN] Sending {len(audio_chunk)} bytes")
+
                     await session.send_realtime_input(
                         audio={
                             "data": audio_chunk,
@@ -163,6 +155,8 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                     if model_turn:
                         for part in model_turn.parts:
                             if part.inline_data:
+                                # DEBUG: Confirm Gemini is replying
+                                print(f" [GEMINI-OUT] Received {len(part.inline_data.data)} bytes")
                                 await play_source.add_audio(part.inline_data.data)
 
             send_task = asyncio.create_task(sender())
@@ -180,7 +174,6 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
         print("Gemini Session Ended.")
 
 
-# --- Commands ---
 @tree.command(name="live", description="Start a live conversation!")
 async def live(interaction: discord.Interaction):
     if not interaction.user.voice:
@@ -202,7 +195,7 @@ async def live(interaction: discord.Interaction):
         run_gemini_session(vc, gemini_input_queue, output_source)
     )
 
-    await interaction.followup.send("Skippy is listening!")
+    await interaction.followup.send("Skippy is listening! (Debug Mode)")
 
 
 @tree.command(name="stop", description="Stop session.")
