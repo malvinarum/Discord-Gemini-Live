@@ -128,53 +128,76 @@ client_genai = genai.Client(api_key=GEMINI_API_KEY)
 
 # --- Gemini Session ---
 async def run_gemini_session(voice_client, receive_queue, play_source):
-    print("Connecting to Gemini Live API...")
+    while True:  # <--- RECONNECT LOOP
+        print("Connecting to Gemini Live API...")
+        config = {"response_modalities": ["AUDIO"]}
 
-    config = {"response_modalities": ["AUDIO"]}
+        # Clear the queue so we don't send old audio after a reconnect
+        while not receive_queue.empty():
+            try:
+                receive_queue.get_nowait()
+            except:
+                pass
 
-    try:
-        async with client_genai.aio.live.connect(model=MODEL_ID, config=config) as session:
-            print("Gemini Connected! Start talking.")
+        try:
+            async with client_genai.aio.live.connect(model=MODEL_ID, config=config) as session:
+                print("Gemini Connected! Start talking.")
 
-            async def sender():
-                while True:
-                    audio_chunk = await receive_queue.get()
-                    if audio_chunk is None: continue
+                async def sender():
+                    while True:
+                        try:
+                            # Wait for audio with a timeout so we can check if session is active
+                            audio_chunk = await asyncio.wait_for(receive_queue.get(), timeout=1.0)
+                            if audio_chunk is None: continue
 
-                    # DEBUG: Confirm we are sending to Gemini
-                    print(f" [GEMINI-IN] Sending {len(audio_chunk)} bytes")
+                            print(f" [GEMINI-IN] Sending {len(audio_chunk)} bytes")
+                            await session.send_realtime_input(
+                                audio={"data": audio_chunk, "mime_type": "audio/pcm"}
+                            )
+                        except asyncio.TimeoutError:
+                            continue  # Just keep checking
+                        except Exception as e:
+                            print(f"Sender Error: {e}")
+                            break
 
-                    await session.send_realtime_input(
-                        audio={
-                            "data": audio_chunk,
-                            "mime_type": "audio/pcm"
-                        }
-                    )
+                async def receiver():
+                    try:
+                        async for response in session.receive():
+                            if response.server_content is None: continue
+                            model_turn = response.server_content.model_turn
+                            if model_turn:
+                                for part in model_turn.parts:
+                                    if part.inline_data:
+                                        print(f" [GEMINI-OUT] Received {len(part.inline_data.data)} bytes")
+                                        await play_source.add_audio(part.inline_data.data)
+                    except Exception as e:
+                        print(f"Receiver Error: {e}")
 
-            async def receiver():
-                async for response in session.receive():
-                    if response.server_content is None: continue
-                    model_turn = response.server_content.model_turn
-                    if model_turn:
-                        for part in model_turn.parts:
-                            if part.inline_data:
-                                # DEBUG: Confirm Gemini is replying
-                                print(f" [GEMINI-OUT] Received {len(part.inline_data.data)} bytes")
-                                await play_source.add_audio(part.inline_data.data)
+                send_task = asyncio.create_task(sender())
+                recv_task = asyncio.create_task(receiver())
 
-            send_task = asyncio.create_task(sender())
-            recv_task = asyncio.create_task(receiver())
+                # Wait until one of them fails or finishes
+                done, pending = await asyncio.wait(
+                    [send_task, recv_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
 
-            done, pending = await asyncio.wait(
-                [send_task, recv_task],
-                return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in pending: task.cancel()
+                # If we are here, the session is dead. Cancel the other task.
+                for task in pending: task.cancel()
 
-    except Exception as e:
-        print(f"Session Error: {e}")
-    finally:
-        print("Gemini Session Ended.")
+                # Check for errors in the finished task
+                for task in done:
+                    if task.exception():
+                        print(f"Task ended with error: {task.exception()}")
+
+        except asyncio.CancelledError:
+            print("Session cancelled by user.")
+            break  # Exit the while loop
+        except Exception as e:
+            print(f"Session Connection Error: {e}")
+
+        print("Gemini Session Ended. Reconnecting in 2 seconds...")
+        await asyncio.sleep(2)
 
 
 @tree.command(name="live", description="Start a live conversation!")
