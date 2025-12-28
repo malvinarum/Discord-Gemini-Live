@@ -6,6 +6,7 @@ import logging
 from discord import app_commands
 from discord.ext import voice_recv
 from google import genai
+from google.genai import types  # Added for safer typing
 from dotenv import load_dotenv
 
 # --- 1. Robust Monkey Patch for Opus Errors ---
@@ -146,13 +147,13 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                     audio_chunk = await receive_queue.get()
                     if audio_chunk is None: continue
 
-                    # FIXED: Correct send method for google-genai SDK
-                    await session.send(
-                        input={
+                    # FIXED: Use send_realtime_input with correct 'audio' kwarg
+                    # This avoids the DeprecationWarning and the TypeError
+                    await session.send_realtime_input(
+                        audio={
                             "data": audio_chunk,
                             "mime_type": "audio/pcm"
-                        },
-                        end_of_turn=False
+                        }
                     )
 
             async def receiver():
