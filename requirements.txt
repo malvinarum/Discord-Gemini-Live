@@ -1,6 +1,6 @@
-discord.py
+discord.py>=2.3.0
 google-genai
 python-dotenv
 numpy
-# You might need the discord.py[voice] extras
 pynacl
+discord-ext-voice-recv
