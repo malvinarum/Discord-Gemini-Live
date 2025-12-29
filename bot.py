@@ -9,6 +9,7 @@ from google import genai
 from dotenv import load_dotenv
 
 # --- 1. Robust Monkey Patch for Opus Errors ---
+# This prevents the bot from crashing if Discord sends empty audio packets.
 import discord.opus
 
 _original_decode = discord.opus.Decoder.decode
@@ -23,15 +24,17 @@ def _patched_decode(self, *args, **kwargs):
 
 discord.opus.Decoder.decode = _patched_decode
 
-# --- 2. Configuration & Logging Hacks ---
+# --- 2. Configuration ---
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 MODEL_ID = os.getenv('GEMINI_MODEL_ID', "gemini-2.5-flash-native-audio-preview-12-2025")
 VOICE_NAME = os.getenv('GEMINI_VOICE_NAME', "Aoede")
-SYSTEM_PROMPT = os.getenv('BOT_PERSONALITY')
+# Default to a generic assistant if no personality is provided
+SYSTEM_PROMPT = os.getenv('BOT_PERSONALITY', "You are a helpful AI assistant.")
 
-# SILENCE THE NOISE
+# --- 3. Logging Setup ---
+# Suppress noisy INFO logs from the voice receiver and gateway
 logging.getLogger("discord.ext.voice_recv").setLevel(logging.ERROR)
 logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.ERROR)
 logging.getLogger("discord.gateway").setLevel(logging.WARNING)
@@ -41,6 +44,7 @@ logging.getLogger("discord.client").setLevel(logging.WARNING)
 class AudioResampler:
     @staticmethod
     def discord_to_gemini(pcm_bytes):
+        # Discord (48k Stereo) -> Gemini (16k Mono)
         try:
             audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
             audio_data = audio_data.reshape(-1, 2)
@@ -51,6 +55,7 @@ class AudioResampler:
 
     @staticmethod
     def gemini_to_discord(pcm_bytes):
+        # Gemini (24k Mono) -> Discord (48k Stereo)
         try:
             audio_data = np.frombuffer(pcm_bytes, dtype=np.int16)
             upsampled = np.repeat(audio_data, 2)
@@ -74,7 +79,7 @@ class LiveAudioSource(discord.AudioSource):
         return len(self._buffer) > 0 or not self.queue.empty()
 
     def read(self):
-        target_size = 3840
+        target_size = 3840  # 20ms of audio
         while len(self._buffer) < target_size:
             try:
                 chunk = self.queue.get_nowait()
@@ -111,7 +116,7 @@ class DiscordToGeminiSink(voice_recv.AudioSink):
         pass
 
 
-# --- Bot Setup ---
+# --- Bot Initialization ---
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
@@ -119,13 +124,17 @@ tree = app_commands.CommandTree(client)
 client_genai = genai.Client(api_key=GEMINI_API_KEY)
 
 
-async def set_static_presence(state):
-    """Sets a simple presence to avoid Discord ratelimits."""
+async def set_presence(state):
+    """
+    Updates the bot's status to indicate state without triggering Discord ratelimits.
+    'active' = Green (Listening)
+    'idle' = Yellow (Waiting)
+    """
     if state == "active":
-        activity = discord.Activity(type=discord.ActivityType.listening, name="mortals bumble")
+        activity = discord.Activity(type=discord.ActivityType.listening, name="to voice")
         status = discord.Status.online
     else:
-        activity = discord.Activity(type=discord.ActivityType.watching, name="for squirrels")
+        activity = discord.Activity(type=discord.ActivityType.custom, name="status", state="Waiting for call...")
         status = discord.Status.idle
 
     await client.change_presence(status=status, activity=activity)
@@ -133,9 +142,10 @@ async def set_static_presence(state):
 
 async def run_gemini_session(voice_client, receive_queue, play_source):
     while True:
-        await set_static_presence("active")
-        print(f"Connecting to Gemini ({MODEL_ID})...")
+        await set_presence("active")
+        print(f"[Session] Connecting to model: {MODEL_ID}")
 
+        # Flush queue to prevent old audio processing
         while not receive_queue.empty():
             try:
                 receive_queue.get_nowait()
@@ -152,20 +162,25 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
 
         try:
             async with client_genai.aio.live.connect(model=MODEL_ID, config=config) as session:
-                print("Gemini Connected!")
+                print("[Session] Connected. Listening...")
 
                 async def sender():
                     buffer = bytearray()
+                    # Accumulate ~150ms of audio to prevent network jitter
                     THRESHOLD = 4800
+                    # Send 10ms of silence to keep the websocket alive when the user isn't talking
                     SILENCE_CHUNK = b'\x00' * 320
 
                     while True:
                         try:
                             try:
+                                # Wait for audio from Discord (short timeout)
                                 msg = await asyncio.wait_for(receive_queue.get(), timeout=0.1)
 
+                                # Echo Cancellation / Barge-In Logic
                                 if play_source.is_playing():
                                     buffer.clear()
+                                    # Send silence so Google knows we are still here
                                     await session.send_realtime_input(
                                         audio={"data": SILENCE_CHUNK, "mime_type": "audio/pcm"})
                                     continue
@@ -177,16 +192,18 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                                     buffer.clear()
 
                             except asyncio.TimeoutError:
+                                # If buffer has data, flush it
                                 if len(buffer) > 0:
                                     await session.send_realtime_input(
                                         audio={"data": bytes(buffer), "mime_type": "audio/pcm"})
                                     buffer.clear()
                                 else:
+                                    # Otherwise send Keep-Alive silence
                                     await session.send_realtime_input(
                                         audio={"data": SILENCE_CHUNK, "mime_type": "audio/pcm"})
                                 continue
                         except Exception as e:
-                            print(f"Sender Error: {e}")
+                            print(f"[Sender] Error: {e}")
                             break
 
                 async def receiver():
@@ -198,26 +215,28 @@ async def run_gemini_session(voice_client, receive_queue, play_source):
                                         if part.inline_data:
                                             await play_source.add_audio(part.inline_data.data)
                         except Exception as e:
-                            print(f"Receiver Error: {e}")
+                            print(f"[Receiver] Error: {e}")
                             break
                         break
 
                 send_task = asyncio.create_task(sender())
                 recv_task = asyncio.create_task(receiver())
+
+                # Wait for either task to fail/finish
                 done, pending = await asyncio.wait([send_task, recv_task], return_when=asyncio.FIRST_COMPLETED)
                 for task in pending: task.cancel()
 
         except Exception as e:
-            print(f"Session Error: {e}")
+            print(f"[Session] Connection Error: {e}")
 
-        print("Reconnecting...")
+        print("[Session] Reconnecting in 2 seconds...")
         await asyncio.sleep(2)
 
 
-@tree.command(name="live", description="Start a live conversation with Skippy!")
+@tree.command(name="live", description="Start a live voice conversation.")
 async def live(interaction: discord.Interaction):
     if not interaction.user.voice:
-        await interaction.response.send_message("Join voice first!", ephemeral=True)
+        await interaction.response.send_message("Please join a voice channel first.", ephemeral=True)
         return
     await interaction.response.defer()
 
@@ -230,24 +249,24 @@ async def live(interaction: discord.Interaction):
     vc.listen(DiscordToGeminiSink(client.loop, gemini_queue))
     vc.play(output_source)
     vc.gemini_task = client.loop.create_task(run_gemini_session(vc, gemini_queue, output_source))
-    await interaction.followup.send("Skippy is listening!")
+    await interaction.followup.send("AI is listening! Start speaking.")
 
 
-@tree.command(name="stop", description="Stop session.")
+@tree.command(name="stop", description="Stop the live session.")
 async def stop(interaction: discord.Interaction):
     if interaction.guild.voice_client:
         if hasattr(interaction.guild.voice_client, 'gemini_task'):
             interaction.guild.voice_client.gemini_task.cancel()
         await interaction.guild.voice_client.disconnect()
-        await set_static_presence("idle")
+        await set_presence("idle")
         await interaction.response.send_message("Session ended.")
 
 
 @client.event
 async def on_ready():
     await tree.sync()
-    await set_static_presence("idle")
-    print(f"Skippy Live is Ready.")
+    await set_presence("idle")
+    print(f"Bot is ready and logged in as {client.user}.")
 
 
 client.run(DISCORD_TOKEN)

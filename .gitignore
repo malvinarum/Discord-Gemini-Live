@@ -1,27 +1,4 @@
-Python virtual environment
-
-This directory contains all the installed libraries for this specific project.
-
-It can be large and is machine-specific.
-
-venv/
-*.venv/
-
-Environment variables
-
-This file contains your secret API keys and tokens.
-
---- DO NOT EVER COMMIT THIS FILE TO GIT ---
-
+__pycache__/
 .env
-
-Python cache files
-
-pycache/
-*.pyc
-*.pyo
-
-IDE/Editor specific config files
-
-.idea/
-.vscode/
+*.log
+venv/

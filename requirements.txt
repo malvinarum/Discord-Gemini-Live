@@ -1,19 +1,6 @@
-#Python libraries required for the project
-
-#This is the v2.1 pivot! Stable + GitHub Sinks.
-
-#The stable "mouth"
-
-discord.py[voice]>=2.3.0
-
-#The dev "ears", installed from GitHub
-
-discord-ext-voice-recv @ git+https://github.com/imayhaveborkedit/discord-ext-voice-recv.git
-
-#The rest of our libraries
-
-google-genai>=0.1.0  # <--- CRITICAL CHANGE: Switched to the modern, active package name
-python-dotenv>=1.0.0
-PyNaCl>=1.5.0
-google-cloud-texttospeech>=2.14.0
-google-cloud-speech>=2.20.0
+discord.py
+google-genai
+python-dotenv
+numpy
+# You might need the discord.py[voice] extras
+pynacl

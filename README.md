@@ -1,120 +1,90 @@
-Gemini Discord Bot - Sprint 1 (Text-Only)
+# Discord Gemini Live (Native Audio) 🎙️✨
 
-This is the foundational code for the Gemini Discord Bot. This sprint's goal is to get the bot online, connected to Discord, and responding to text commands via the Gemini API.
+**The first open-source implementation of a Discord Bot utilizing the Google Gemini Multimodal Live API for native Speech-to-Speech interaction.**
 
-1. Ubuntu Server Prerequisites
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Gemini 2.0](https://img.shields.io/badge/Gemini-2.0_Flash_Live-magenta)](https://ai.google.dev/)
+[![Discord.py](https://img.shields.io/badge/discord.py-2.0+-5865F2)](https://discordpy.readthedocs.io/)
 
-Make sure your Ubuntu server has the core Python tools installed.
+## 🚀 Why is this special?
 
-sudo apt-get update
-sudo apt-get install -y python3.8-venv python3-pip ffmpeg libnacl-dev
+Most "voice" bots on Discord today utilize a slow, chained pipeline:
+`Speech-to-Text (Whisper)` ➔ `LLM (GPT)` ➔ `Text-to-Speech (ElevenLabs)`
 
+**This bot is different.** It establishes a **direct, bi-directional WebSocket** connection with Google's Gemini 2.0 model.
+* **No Transcriptions:** The model "hears" the raw audio bytes (tone, emotion, pace).
+* **No TTS Engine:** The model generates raw audio bytes directly.
+* **Sub-Second Latency:** Responses feel almost instantaneous.
+* **Barge-In Capable:** You can interrupt the bot, and it will stop talking and listen (Echo Cancellation).
 
-(Note: ffmpeg and libnacl-dev aren't used in Sprint 1, but we will need them for Sprint 2 (voice). Let's install them now.)
+---
 
-2. Project Setup
+## 🛠️ The Architecture (The "Secret Sauce")
 
-Clone/Copy Files:
-Get bot.py, requirements.txt, and .env.example into a new directory on your server (e.g., /home/malvin/gemini-bot).
+Connecting Discord's UDP audio stream to Gemini's WebSocket required solving several complex synchronization issues. This repo implements three critical fixes:
 
-mkdir ~/gemini-bot
-cd ~/gemini-bot
-# (Assuming you've copied or created the files in here)
+### 1. "Silence Injection" (Keep-Alive) 🤫
+Gemini's WebSocket will close the connection with a `1011` error if the client stops sending data. However, when the bot is speaking, we must cut the microphone stream to prevent the bot from hearing itself (Echo).
+* **Solution:** When the bot speaks, we inject **Digital Silence** (`b'\x00'`) into the upload stream. This "mutes" the mic but keeps the WebSocket heartbeat alive.
 
+### 2. Accumulation Buffer (Jitter Fix) 🌊
+Discord sends audio in tiny 20ms chunks. Sending these individually to Google causes network congestion and "choppy" audio.
+* **Solution:** We implement an **Accumulation Buffer** that collects ~150ms of audio (4800 bytes) before sending a single, stable chunk to the API.
 
-Create a Python Virtual Environment:
-It's best practice to keep project dependencies isolated.
+### 3. Opus Error Patching 🩹
+Discord occasionally sends empty or malformed Opus packets, which causes standard decoders to crash.
+* **Solution:** A monkey-patch for `discord.opus.Decoder` that safely returns silence instead of raising an exception.
 
-python3 -m venv venv
+---
 
+## ⚙️ Prerequisites
 
-Activate the Environment:
-You'll need to do this every time you start a new terminal session to work on the bot.
+* **Python 3.10+**
+* **FFmpeg** (Required for Discord audio processing)
+    * *Linux:* `sudo apt install ffmpeg`
+    * *Windows:* [Download and add to PATH](https://ffmpeg.org/download.html)
+    * *Mac:* `brew install ffmpeg`
+* **Google Gemini API Key** (Access to `gemini-2.0-flash-exp` or newer)
 
-source venv/bin/activate
+---
 
+## 📦 Installation
 
-(Your prompt should now show (venv))
+1.  **Clone the repository:**
+    ```bash
+    git clone [https://github.com/yourusername/discord-gemini-live.git](https://github.com/yourusername/discord-gemini-live.git)
+    cd discord-gemini-live
+    ```
 
-Install Python Dependencies:
-This will install discord.py, google-generativeai, and python-dotenv.
+2.  **Create a Virtual Environment:**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+    ```
 
-pip install -r requirements.txt
+3.  **Install Dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
 
+4.  **Create your `.env` file:**
+    Copy `.env.example` to `.env` and fill in your details.
+    ```bash
+    cp .env.example .env
+    ```
 
-2.5. Git & GitHub Setup (Optional but Recommended)
+---
 
-Using Git (and GitHub) will make managing updates much easier, just as you said.
+## 📝 Configuration (`.env`)
 
-Create .gitignore:
-A .gitignore file tells Git to ignore sensitive files (like .env) and bulky folders (like venv). A file named .gitignore has been provided for you. Make sure it's in your ~/gemini-bot directory.
+| Variable | Description |
+| :--- | :--- |
+| `DISCORD_TOKEN` | Your Discord Bot Token (Get it from Developer Portal). |
+| `GEMINI_API_KEY` | Your Google AI Studio API Key. |
+| `GEMINI_MODEL_ID` | Default: `gemini-2.5-flash-native-audio-preview-12-2025` |
+| `GEMINI_VOICE_NAME` | Voices: `Aoede`, `Puck`, `Charon`, `Kore`, `Fenrir`. |
+| `BOT_PERSONALITY` | The System Instruction (Prompt) for the bot. |
 
-Initialize Git:
-In your project directory (~/gemini-bot), run:
-
-git init
-git add .
-git commit -m "Sprint 1: Initial commit - Text-only bot"
-
-
-Create a GitHub Repository:
-
-Go to GitHub and create a new repository (e.g., gemini-discord-bot).
-
-IMPORTANT: Make it a Private repository. This is critical to protect your API keys and bot logic.
-
-Do not add a README, license, or .gitignore from the GitHub UI (we've already created them).
-
-Link and Push:
-GitHub will give you instructions on the new repo's page. They will look something like this (use your own URL):
-
-git remote add origin [https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git](https://github.com/YOUR_USERNAME/YOUR_REPO_NAME.git)
-git branch -M main
-git push -u origin main
-
-
-Now, when we make changes in future sprints, you can just run git add ., git commit -m "Sprint 2 changes", and git push to save your work.
-
-3. Configuration
-
-
-Save and exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
-
-## 4\. Invite Your Bot to Your Server
-
-1.  Go back to the [Discord Developer Portal](https://www.google.com/search?q=https://discord.com/developers/applications).
-2.  Select your application.
-3.  Go to "OAuth2" -> "URL Generator".
-4.  **Scopes:** Select `bot` AND `applications.commands`.
-    * `bot`: Adds the bot user to your server.
-    * `applications.commands`: Allows the bot to create and respond to slash commands.
-5.  **Bot Permissions:** Select:
-    * `Read Messages/View Channels`
-      * `Send Messages`
-    * `Read Message History`
-        *(We'll add `Connect` and `Speak` in the next sprint)*
-6.  Copy the generated URL at the bottom, paste it into your browser, and invite the bot to your server.
-
-## 5. Run the Bot
-
-With your `(venv)` still active, run the Python script:
-
-```bash
-python3 bot.py
-
-
-If all went well, you'll see "Logged in as [Your Bot Name]" in the console, and your bot will appear "Online" in Discord.
-
-6. Test Sprint 1
-
-In any text channel your bot can see, start typing /
-You should see the ask command pop up.
-
-Select it and type your question:
-/ask What is the capital of Türkiye?
-
-The bot should respond with an answer from Gemini.
-
-To stop the bot, press Ctrl+C in the terminal.
-
-For a more permanent, production-ready setup (Sprint 4+), we'll look into using systemd to run this as a background service. For now, this is perfect for development.
+**Example Personality:**
+```text
+You are Skippy, a grumpy otter wizard who hates technology but loves fish.
